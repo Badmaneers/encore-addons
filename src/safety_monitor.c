@@ -171,12 +171,15 @@ int on_profile_change(int event_type, const char *filepath,
 void game_monitor_loop(int method_index)
 {
     bool bypass_active = false;
+#ifndef DEBUG_BUILD
     int license_counter = 0;
+#endif
 
     while (1) {
         bool was_active = bypass_active;
         sleep(GAME_POLL_INTERVAL_SEC);
 
+#ifndef DEBUG_BUILD
         /* ── License re-verification ──────────────────────────── */
         if (license_counter < LICENSE_RECHECK_ITERS) {
             license_counter++;
@@ -210,6 +213,7 @@ void game_monitor_loop(int method_index)
                 license_counter = 0;  /* Reset on success */
             }
         }
+#endif
 
         /* ── Foreground app detection ─────────────────────────── */
         if (g_foreground_app == NULL) {

@@ -21,6 +21,14 @@
 #include <sys/types.h>
 #include <pthread.h>
 
+/* ─── Debug build ──────────────────────────────────────────────────── */
+/* When compiled with -DDEBUG_BUILD (via ./build.sh --debug):
+ *   - All license checks are bypassed (check_license() returns LICENSE_OK)
+ *   - Anti-tamper / anti-debug subsystem is disabled
+ *   - Binary is not stripped, includes debug symbols (-g -O0)
+ *   - A visible "DEBUG BUILD" banner is printed at startup
+ * NEVER ship a debug build to end users. */
+
 /* ─── Version ──────────────────────────────────────────────────────── */
 #define ENCORE_ADDON_VERSION        "1.3"
 #define ENCORE_USER_AGENT           "EncoreLicenseVerifier/" ENCORE_ADDON_VERSION

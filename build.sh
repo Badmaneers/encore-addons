@@ -31,7 +31,8 @@ BINARY="$OUTDIR/bypass_daemon"
 usage() {
     echo "Usage: $0 [OPTION]"
     echo ""
-    echo "  (no flag)     Build the Android ARM64 binary"
+    echo "  (no flag)     Build the Android ARM64 binary (release)"
+    echo "  --debug       Build debug binary (no license checks, no anti-tamper)"
     echo "  --pack        Build binary + package flashable module zip"
     echo "  --module      Package module zip only (requires prior build)"
     echo "  --clean       Remove all build artifacts"
@@ -55,8 +56,14 @@ do_compile() {
     export PATH="$TOOLCHAIN/bin:$PATH"
     mkdir -p "$OUTDIR"
 
+    local BUILD_TYPE="release"
+    if [ "$DEBUG_BUILD_FLAG" = "1" ]; then
+        BUILD_TYPE="DEBUG (no license checks)"
+    fi
+
     echo "═══════════════════════════════════════════════════════════"
     echo "  Building bypass_daemon for Android ARM64 (API 34)"
+    echo "  Build type: $BUILD_TYPE"
     echo "═══════════════════════════════════════════════════════════"
     echo ""
 
@@ -86,16 +93,26 @@ do_compile() {
         -target aarch64-linux-android34
         -I"$INC"
         -I"$DEPS/include"
-        -O2
         -Wall -Wextra -Wno-unused-parameter
         -DANDROID
         -fPIE
         -fstack-protector-strong
-        # Anti-RE: no frame pointers, no debug info, obfuscate string refs
-        -fomit-frame-pointer
-        -fvisibility=hidden
-        -fdata-sections -ffunction-sections
     )
+
+    if [ "$DEBUG_BUILD_FLAG" = "1" ]; then
+        CFLAGS+=(
+            -DDEBUG_BUILD
+            -g -O0
+        )
+    else
+        CFLAGS+=(
+            -O2
+            # Anti-RE: no frame pointers, no debug info, obfuscate string refs
+            -fomit-frame-pointer
+            -fvisibility=hidden
+            -fdata-sections -ffunction-sections
+        )
+    fi
 
     echo "[1/3] Compiling sources..."
     OBJS=()
@@ -109,11 +126,17 @@ do_compile() {
 
     echo ""
     echo "[2/3] Linking bypass_daemon (static curl + openssl)..."
+
+    local LDFLAGS_EXTRA=()
+    if [ "$DEBUG_BUILD_FLAG" != "1" ]; then
+        LDFLAGS_EXTRA+=(-Wl,--gc-sections)
+    fi
+
     "$CC" \
         --sysroot="$SYSROOT" \
         -target aarch64-linux-android34 \
         -pie \
-        -Wl,--gc-sections \
+        "${LDFLAGS_EXTRA[@]}" \
         "${OBJS[@]}" \
         "$DEPS/lib/libcurl.a" \
         "$DEPS/lib/libssl.a" \
@@ -121,10 +144,15 @@ do_compile() {
         -lz -ldl \
         -o "$BINARY"
 
-    echo ""
-    echo "[3/3] Stripping..."
-    cp "$BINARY" "$BINARY.debug"
-    "$TOOLCHAIN/bin/llvm-objcopy" --strip-all "$BINARY"
+    if [ "$DEBUG_BUILD_FLAG" = "1" ]; then
+        echo ""
+        echo "[3/3] Skipping strip (debug build)"
+    else
+        echo ""
+        echo "[3/3] Stripping..."
+        cp "$BINARY" "$BINARY.debug"
+        "$TOOLCHAIN/bin/llvm-objcopy" --strip-all "$BINARY"
+    fi
 
     BIN_SIZE=$(ls -lh "$BINARY" | awk '{print $5}')
     echo ""
@@ -193,6 +221,7 @@ case "${1:-build}" in
     --clean)    do_clean ;;
     --module)   do_package ;;
     --pack)     do_compile; do_package ;;
+    --debug)    DEBUG_BUILD_FLAG=1 do_compile ;;
     build|"")   do_compile ;;
     *)          echo "Unknown option: $1"; usage ;;
 esac

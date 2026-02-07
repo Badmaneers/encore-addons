@@ -32,6 +32,7 @@ int              g_current_ma_scale  = 0;
 char             g_hmac_salt[16]     = {0};
 char             g_timestamp_buf[64] = {0};
 
+#ifndef DEBUG_BUILD
 /**
  * Handle license failure — log, notify, disable module, and exit.
  */
@@ -64,6 +65,7 @@ static void handle_license_failure(int result)
         exit(1);
     }
 }
+#endif /* !DEBUG_BUILD */
 
 /**
  * Run the Encore Tweaks integration mode:
@@ -116,9 +118,11 @@ static void run_encore_mode(int method_index)
     /* Main loop: periodic license re-verification */
     while (1) {
         sleep(LICENSE_RECHECK_SEC);
+#ifndef DEBUG_BUILD
         int result = check_license(0);
         if (result == LICENSE_OK) continue;
         handle_license_failure(result);
+#endif
     }
 }
 
@@ -131,6 +135,15 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+#ifdef DEBUG_BUILD
+    fprintf(stderr,
+        "\n"
+        "  ╔═══════════════════════════════════════════════════╗\n"
+        "  ║         ⚠  DEBUG BUILD — NO LICENSE CHECK  ⚠     ║\n"
+        "  ║   Anti-tamper disabled. DO NOT SHIP THIS BUILD.   ║\n"
+        "  ╚═══════════════════════════════════════════════════╝\n"
+        "\n");
+#else
     /* ── Step 1b: Initialize anti-tamper subsystem ──────────────── */
     at_init(argv[0]);
 
@@ -142,9 +155,14 @@ int main(int argc, char *argv[])
         /* Don't log or reveal what was detected — just silently fail.
          * The trap has already been armed (module will be disabled). */
     }
+#endif
 
     /* ── Step 2a: --license-check (standalone license verification) ── */
     if (argc >= 2 && strcmp(argv[1], "--license-check") == 0) {
+#ifdef DEBUG_BUILD
+        printf("License check: SKIPPED (debug build)\n");
+        return 0;
+#else
         int result = check_license(0);
         if (result == LICENSE_OK) {
             printf("License check: OK ✓\n");
@@ -161,10 +179,14 @@ int main(int argc, char *argv[])
         }
         fprintf(stderr, "License check: DEVICE ERROR\n");
         return 1;
+#endif
     }
 
     /* ── Step 2b: --test mode (bypass charging hardware detection) ── */
     if (argc >= 2 && strcmp(argv[1], "--test") == 0) {
+#ifdef DEBUG_BUILD
+        printf("License check: SKIPPED (debug build)\n");
+#else
         /* Verify license FIRST — reject unlicensed devices before
          * they can even test bypass charging hardware. */
         printf("Verifying device license...\n");
@@ -183,6 +205,7 @@ int main(int argc, char *argv[])
             fatal_error("Unable to retrieve device details required for license verification.\n"
                         "Please contact the maintainer for assistance.");
         }
+#endif
 
         /* License OK — now test bypass charging support */
         if (access(PATH_NODE_CONFIG, F_OK) != 0) {
@@ -215,6 +238,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+#ifndef DEBUG_BUILD
     /* ── Step 5: Verify license (with retry on curl errors) ─────── */
     /* On boot, give the network time to come up. Retry up to
      * LICENSE_BOOT_MAX_RETRIES times before giving up and disabling
@@ -249,6 +273,7 @@ int main(int argc, char *argv[])
     if (result != LICENSE_OK) {
         handle_license_failure(result);  /* logs, notifies, disables module, exits */
     }
+#endif
 
     /* ── Step 6: Decide operating mode ──────────────────────────── */
     bool encore_installed = (access(PATH_ENCORE_MODULE_PROP, F_OK) == 0) &&
