@@ -106,7 +106,7 @@ char *get_foreground_app(const char *game_list_path)
  * Reconstructed from FUN_0060eac8:
  *   Iterates /proc/<pid>/cmdline entries, reads contents,
  *   replaces NUL bytes with spaces, then does strstr(cmdline, process_name).
- *   Returns the highest matching PID (observed: returns the latest one found).
+ *   Returns the FIRST matching PID found during iteration.
  *
  * @param process_name  String to search for in /proc/<pid>/cmdline
  * @return Highest matching PID, or 0 if not found

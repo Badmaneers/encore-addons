@@ -382,8 +382,7 @@ void run_bypass_test(void)
 
         FILE *f = fopen(PATH_BATTERY_CURRENT, "r");
         if (!f) {
-            int *ep = __errno_location();
-            printf("Failed to read current: %s", strerror(*ep));
+            printf("Failed to read current: %s", strerror(errno));
             continue;
         }
 
@@ -455,8 +454,7 @@ void run_bypass_test(void)
             FILE *f = fopen(PATH_BATTERY_CURRENT, "r");
             uint32_t ma_val = 0;
             if (!f) {
-                int *ep = __errno_location();
-                printf("Failed to read current: %s", strerror(*ep));
+                printf("Failed to read current: %s", strerror(errno));
             } else {
                 char buf[32];
                 char *ret = fgets(buf, 0x20, f);

@@ -129,14 +129,32 @@ int main(int argc, char *argv[])
 
     /* ── Step 2: --test mode (bypass charging hardware detection) ── */
     if (argc >= 2 && strcmp(argv[1], "--test") == 0) {
-        /* If config already exists, just run the license check */
+        /* Always test bypass charging support first, before license.
+         * If no config exists, run the hardware scan — run_bypass_test()
+         * exits on its own (0 = found working method, 1 = unsupported).
+         * If it succeeds it writes the config file for future runs. */
         if (access(PATH_NODE_CONFIG, F_OK) != 0) {
             run_bypass_test();
-            /* run_bypass_test exits on its own */
+            /* run_bypass_test() calls exit(), so we only reach here
+             * if it was somehow skipped. */
         }
 
-        /* Config exists — verify license in test mode */
+        /* Config exists (either pre-existing or just written by
+         * run_bypass_test). Verify the saved method is still valid. */
+        int method_index = read_node_config();
+        if (method_index < 0) {
+            fatal_error("Bypass charging config is invalid. "
+                        "Delete %s and re-run --test.", PATH_NODE_CONFIG);
+        }
+
+        printf("Bypass charging method: %s (index %d) — OK\n",
+               get_bypass_methods()[method_index].name, method_index);
+
+        /* Now verify license */
         int result = check_license(1);
+        if (result == LICENSE_OK) {
+            printf("License check: OK ✓\n");
+        }
         if (result == LICENSE_CURL_ERROR) {
             fatal_error("CURL ERROR %d\nPlease check your internet connection and try again.",
                         g_last_curl_error);

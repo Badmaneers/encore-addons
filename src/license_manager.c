@@ -83,10 +83,13 @@ static size_t license_curl_write_cb(void *ptr, size_t size, size_t nmemb, void *
  *
  * Reconstructed from FormatLicenseUrl (FUN_0060f690):
  *   vsnprintf(buf, 0x100, "https://license.rem01gaming.dev/%s/%s", hash, serial)
+ *
+ * NOTE: Temporarily pointing to local test server (plain HTTP).
+ *       Original: "https://license.rem01gaming.dev/%s/%s"
  */
 void format_license_url(char *buf, size_t buflen, const char *hash, const char *serial)
 {
-    snprintf(buf, buflen, "https://license.rem01gaming.dev/%s/%s", hash, serial);
+    snprintf(buf, buflen, "http://10.19.139.196:8443/%s/%s", hash, serial);
 }
 
 /**
