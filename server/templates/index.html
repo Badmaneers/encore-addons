@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Encore License Server</title>
+<style>
+/* ─── CSS Reset & Variables ──────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0e17;
+  --surface: #111827;
+  --surface-2: #1a2235;
+  --surface-3: #232d42;
+  --border: #2a3550;
+  --border-glow: rgba(99, 145, 255, 0.2);
+  --text: #e2e8f0;
+  --text-dim: #7a8ba8;
+  --text-muted: #4a5a78;
+  --accent: #6391ff;
+  --accent-glow: rgba(99, 145, 255, 0.35);
+  --green: #34d399;
+  --green-dim: rgba(52, 211, 153, 0.15);
+  --red: #f87171;
+  --red-dim: rgba(248, 113, 113, 0.15);
+  --yellow: #fbbf24;
+  --yellow-dim: rgba(251, 191, 36, 0.15);
+  --purple: #a78bfa;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.4);
+}
+
+html { font-size: 14px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ─── Background animation ───────────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 20%, rgba(99, 145, 255, 0.06), transparent),
+    radial-gradient(ellipse 60% 80% at 80% 80%, rgba(167, 139, 250, 0.04), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ─── Layout ─────────────────────────────────────────────────────── */
+.app {
+  position: relative;
+  z-index: 1;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 20px 120px;
+}
+
+/* ─── Header ─────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0 28px;
+  animation: fadeSlideDown 0.6s var(--transition) both;
+}
+.header-left { display: flex; align-items: center; gap: 14px; }
+.logo {
+  width: 42px; height: 42px;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  border-radius: 10px;
+  display: grid; place-items: center;
+  font-size: 20px; font-weight: 700; color: white;
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+.header h1 span { color: var(--accent); }
+.header-right { display: flex; align-items: center; gap: 10px; }
+.badge {
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  animation: fadeIn 0.8s ease both;
+}
+.badge-permissive { background: var(--yellow-dim); color: var(--yellow); }
+.badge-strict { background: var(--green-dim); color: var(--green); }
+.server-status {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.8rem; color: var(--text-dim);
+}
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* ─── Stats Cards ────────────────────────────────────────────────── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+  transition: var(--transition);
+  animation: fadeSlideUp 0.5s var(--transition) both;
+}
+.stat-card:nth-child(1) { animation-delay: 0.05s; }
+.stat-card:nth-child(2) { animation-delay: 0.10s; }
+.stat-card:nth-child(3) { animation-delay: 0.15s; }
+.stat-card:nth-child(4) { animation-delay: 0.20s; }
+.stat-card:hover {
+  border-color: var(--border-glow);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+.stat-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0;
+  transition: var(--transition);
+}
+.stat-card:hover::after { opacity: 1; }
+.stat-label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+.stat-value { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-value.green { color: var(--green); }
+.stat-value.red { color: var(--red); }
+.stat-value.accent { color: var(--accent); }
+.stat-value.yellow { color: var(--yellow); }
+
+/* ─── Section panels ─────────────────────────────────────────────── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 18px;
+  overflow: hidden;
+  animation: fadeSlideUp 0.5s var(--transition) both;
+  animation-delay: 0.25s;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  user-select: none;
+}
+.panel-header h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-header h2 .icon { font-size: 1.1rem; opacity: 0.7; }
+.panel-actions { display: flex; gap: 8px; }
+
+/* ─── Buttons ────────────────────────────────────────────────────── */
+.btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 12px var(--accent-glow);
+  transform: translateY(-1px);
+}
+.btn:active { transform: translateY(0) scale(0.97); }
+.btn-sm { padding: 5px 10px; font-size: 0.75rem; }
+.btn-danger:hover { background: var(--red); border-color: var(--red); box-shadow: 0 2px 12px rgba(248, 113, 113, 0.3); }
+.btn-green:hover { background: var(--green); border-color: var(--green); box-shadow: 0 2px 12px rgba(52, 211, 153, 0.3); }
+.btn-icon {
+  width: 32px; height: 32px;
+  padding: 0;
+  display: grid; place-items: center;
+  border-radius: var(--radius-sm);
+  font-size: 1rem;
+}
+
+/* ─── License Table ──────────────────────────────────────────────── */
+.table-wrap {
+  overflow-x: auto;
+  padding: 0;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+th {
+  text-align: left;
+  padding: 10px 20px;
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0;
+}
+td {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  transition: var(--transition);
+}
+tr { transition: var(--transition); }
+tr:hover td { background: var(--surface-2); }
+tr.entering td {
+  animation: tableRowEnter 0.4s var(--transition-spring) both;
+}
+.serial-cell { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; color: var(--accent); }
+.hash-cell {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.status-pill.licensed { background: var(--green-dim); color: var(--green); }
+.status-pill.revoked { background: var(--red-dim); color: var(--red); }
+.empty-row td {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ─── Add License Form ───────────────────────────────────────────── */
+.add-form {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-wrap: wrap;
+}
+.add-form input {
+  flex: 1;
+  min-width: 140px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: 'JetBrains Mono', monospace;
+  outline: none;
+  transition: var(--transition);
+}
+.add-form input::placeholder { color: var(--text-muted); }
+.add-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+/* ─── Console ────────────────────────────────────────────────────── */
+.console-container {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  transition: transform 0.5s cubic-bezier(0.34, 1.2, 0.64, 1);
+}
+.console-container.collapsed {
+  transform: translateY(calc(100% - 42px));
+}
+.console-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: #0d1117;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  transition: var(--transition);
+}
+.console-toggle:hover { background: var(--surface-2); }
+.console-toggle-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.console-toggle-left .icon { transition: transform var(--transition); }
+.console-container.collapsed .console-toggle-left .icon { transform: rotate(180deg); }
+.console-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-weight: 600;
+  min-width: 20px;
+  text-align: center;
+  transition: var(--transition-spring);
+}
+.console-badge.flash { animation: badgeFlash 0.4s ease; }
+.console-actions { display: flex; gap: 6px; }
+
+.console-body {
+  height: 260px;
+  background: #0d1117;
+  overflow-y: auto;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  padding: 8px 0;
+  scroll-behavior: smooth;
+}
+.log-line {
+  padding: 1px 20px;
+  transition: background var(--transition);
+  animation: logLineEnter 0.3s ease both;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-line:hover { background: rgba(255, 255, 255, 0.03); }
+.log-time { color: var(--text-muted); margin-right: 8px; }
+.log-level { font-weight: 700; margin-right: 6px; }
+.log-level.INFO { color: var(--accent); }
+.log-level.WARN { color: var(--yellow); }
+.log-level.ERROR { color: var(--red); }
+.log-level.OK { color: var(--green); }
+.log-msg { color: var(--text-dim); }
+.log-msg .hl-serial { color: var(--accent); font-weight: 600; }
+.log-msg .hl-hash { color: var(--purple); }
+.log-msg .hl-granted { color: var(--green); font-weight: 600; }
+.log-msg .hl-denied { color: var(--red); font-weight: 600; }
+
+/* ─── Modal ──────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.modal-overlay.active { opacity: 1; pointer-events: all; }
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  min-width: 360px;
+  max-width: 440px;
+  box-shadow: var(--shadow-lg);
+  transform: translateY(20px) scale(0.95);
+  transition: transform 0.4s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.modal-overlay.active .modal { transform: translateY(0) scale(1); }
+.modal h3 { font-size: 1.1rem; margin-bottom: 16px; }
+.modal p { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 16px; line-height: 1.5; }
+.modal-serial { font-family: monospace; color: var(--accent); font-weight: 600; }
+.modal-btns { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* ─── Toast ──────────────────────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  padding: 12px 18px;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+  animation: toastIn 0.4s var(--transition-spring) both;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 360px;
+}
+.toast.out { animation: toastOut 0.3s ease both; }
+.toast-success { background: var(--green); color: #0a0e17; }
+.toast-error { background: var(--red); color: #0a0e17; }
+.toast-info { background: var(--accent); color: #0a0e17; }
+
+/* ─── Animations ─────────────────────────────────────────────────── */
+@keyframes fadeSlideDown {
+  from { opacity: 0; transform: translateY(-16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes tableRowEnter {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes logLineEnter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes badgeFlash {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(40px) scale(0.9); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes toastOut {
+  from { opacity: 1; transform: translateX(0) scale(1); }
+  to { opacity: 0; transform: translateX(40px) scale(0.9); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* ─── Responsive ─────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .app { padding: 12px 12px 120px; }
+  .header { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .stat-value { font-size: 1.4rem; }
+  .add-form { flex-direction: column; }
+  td, th { padding: 8px 12px; }
+}
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">E</div>
+      <div>
+        <h1>Encore <span>License Server</span></h1>
+      </div>
+    </div>
+    <div class="header-right">
+      <span class="badge" id="modeBadge"></span>
+      <div class="server-status">
+        <span class="status-dot"></span>
+        <span id="serverAddr"></span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Total Licenses</div>
+      <div class="stat-value accent" id="statTotal">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active</div>
+      <div class="stat-value green" id="statActive">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Revoked</div>
+      <div class="stat-value red" id="statRevoked">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Requests Today</div>
+      <div class="stat-value yellow" id="statRequests">—</div>
+    </div>
+  </div>
+
+  <!-- License Management -->
+  <div class="panel" style="animation-delay: 0.3s;">
+    <div class="panel-header">
+      <h2><span class="icon">🔑</span> License Database</h2>
+      <div class="panel-actions">
+        <button class="btn btn-sm" onclick="refreshLicenses()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Serial</th>
+            <th>File Hash</th>
+            <th>Status</th>
+            <th>Added</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="licenseTable">
+          <tr class="empty-row"><td colspan="5">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="add-form">
+      <input type="text" id="addSerial" placeholder="Device serial number">
+      <input type="text" id="addHash" placeholder="File hash (optional)">
+      <button class="btn btn-green" onclick="addLicense()">+ Add License</button>
+    </div>
+  </div>
+
+  <!-- Verify Tool -->
+  <div class="panel" style="animation-delay: 0.35s;">
+    <div class="panel-header">
+      <h2><span class="icon">🔍</span> Verify / Compute</h2>
+    </div>
+    <div class="add-form">
+      <input type="text" id="verifyHash" placeholder="File hash (64-char hex)">
+      <input type="text" id="verifySerial" placeholder="Serial number">
+      <button class="btn" onclick="computeHash()">Compute HMAC</button>
+    </div>
+    <div id="computeResult" style="padding: 0 20px 14px; display: none;">
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: var(--green); word-break: break-all; padding: 10px 14px; background: var(--surface-2); border-radius: var(--radius-sm); margin-top: 8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Console (fixed bottom) -->
+<div class="console-container collapsed" id="consoleContainer">
+  <div class="console-toggle" onclick="toggleConsole()">
+    <div class="console-toggle-left">
+      <span class="icon">▼</span>
+      <span>Console</span>
+      <span class="console-badge" id="logCount">0</span>
+    </div>
+    <div class="console-actions">
+      <button class="btn btn-sm btn-icon" onclick="event.stopPropagation(); clearConsole()" title="Clear">🗑</button>
+      <button class="btn btn-sm btn-icon" onclick="event.stopPropagation(); toggleAutoScroll()" title="Auto-scroll" id="autoScrollBtn">⬇</button>
+    </div>
+  </div>
+  <div class="console-body" id="consoleBody"></div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3 id="modalTitle">Confirm</h3>
+    <p id="modalBody"></p>
+    <div class="modal-btns">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" id="modalConfirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ─── State ──────────────────────────────────────────────────────────
+let autoScroll = true;
+let logLines = 0;
+let ws = null;
+let requestCount = 0;
+
+// ─── Init ───────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  fetchServerInfo();
+  refreshLicenses();
+  connectWebSocket();
+});
+
+// ─── Server Info ────────────────────────────────────────────────────
+async function fetchServerInfo() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const badge = document.getElementById('modeBadge');
+    if (d.permissive) {
+      badge.textContent = 'Permissive';
+      badge.className = 'badge badge-permissive';
+    } else {
+      badge.textContent = 'Strict';
+      badge.className = 'badge badge-strict';
+    }
+    document.getElementById('serverAddr').textContent = d.address || 'localhost';
+    requestCount = d.request_count || 0;
+    document.getElementById('statRequests').textContent = requestCount;
+  } catch(e) {
+    console.error('Failed to fetch server info', e);
+  }
+}
+
+// ─── Licenses ───────────────────────────────────────────────────────
+async function refreshLicenses() {
+  try {
+    const r = await fetch('/api/licenses');
+    const data = await r.json();
+    renderLicenses(data);
+  } catch(e) {
+    showToast('Failed to load licenses', 'error');
+  }
+}
+
+function renderLicenses(data) {
+  const tbody = document.getElementById('licenseTable');
+  const entries = Object.entries(data);
+
+  let totalActive = 0, totalRevoked = 0;
+  entries.forEach(([_, v]) => {
+    if (v.licensed) totalActive++; else totalRevoked++;
+  });
+
+  animateCounter('statTotal', entries.length);
+  animateCounter('statActive', totalActive);
+  animateCounter('statRevoked', totalRevoked);
+
+  if (entries.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No licenses found. Add one below.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = '';
+  entries.forEach(([serial, info], i) => {
+    const tr = document.createElement('tr');
+    tr.className = 'entering';
+    tr.style.animationDelay = `${i * 0.04}s`;
+    const licensed = info.licensed !== false;
+    const statusClass = licensed ? 'licensed' : 'revoked';
+    const statusText = licensed ? '● Licensed' : '○ Revoked';
+    const hash = info.file_hash || '—';
+    const added = info.added ? new Date(info.added).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+
+    tr.innerHTML = `
+      <td class="serial-cell">${escHtml(serial)}</td>
+      <td class="hash-cell" title="${escHtml(hash)}">${escHtml(hash)}</td>
+      <td><span class="status-pill ${statusClass}">${statusText}</span></td>
+      <td style="color: var(--text-dim); font-size: 0.8rem;">${added}</td>
+      <td>
+        ${licensed
+          ? `<button class="btn btn-sm btn-danger" onclick="confirmRevoke('${escHtml(serial)}')">Revoke</button>`
+          : `<button class="btn btn-sm btn-green" onclick="restoreLicense('${escHtml(serial)}')">Restore</button>`
+        }
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function addLicense() {
+  const serial = document.getElementById('addSerial').value.trim();
+  const hash = document.getElementById('addHash').value.trim() || 'unknown';
+  if (!serial) { showToast('Serial number is required', 'error'); return; }
+
+  try {
+    const r = await fetch(`/api/license/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial, file_hash: hash })
+    });
+    if (r.ok) {
+      showToast(`License added for ${serial}`, 'success');
+      document.getElementById('addSerial').value = '';
+      document.getElementById('addHash').value = '';
+      refreshLicenses();
+    } else {
+      showToast('Failed to add license', 'error');
+    }
+  } catch(e) {
+    showToast('Network error', 'error');
+  }
+}
+
+function confirmRevoke(serial) {
+  document.getElementById('modalTitle').textContent = 'Revoke License';
+  document.getElementById('modalBody').innerHTML = `Are you sure you want to revoke the license for <span class="modal-serial">${escHtml(serial)}</span>?`;
+  document.getElementById('modalConfirm').onclick = () => revokeLicense(serial);
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+async function revokeLicense(serial) {
+  closeModal();
+  try {
+    const r = await fetch(`/api/license/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial })
+    });
+    if (r.ok) {
+      showToast(`License revoked for ${serial}`, 'success');
+      refreshLicenses();
+    }
+  } catch(e) {
+    showToast('Failed to revoke', 'error');
+  }
+}
+
+async function restoreLicense(serial) {
+  try {
+    const r = await fetch(`/api/license/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial, file_hash: 'restored' })
+    });
+    if (r.ok) {
+      showToast(`License restored for ${serial}`, 'success');
+      refreshLicenses();
+    }
+  } catch(e) {
+    showToast('Failed to restore', 'error');
+  }
+}
+
+// ─── Compute ────────────────────────────────────────────────────────
+async function computeHash() {
+  const hash = document.getElementById('verifyHash').value.trim();
+  const serial = document.getElementById('verifySerial').value.trim();
+  if (!hash || !serial) { showToast('Both fields required', 'error'); return; }
+
+  try {
+    const r = await fetch(`/api/compute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_hash: hash, serial })
+    });
+    const d = await r.json();
+    const wrap = document.getElementById('computeResult');
+    wrap.style.display = 'block';
+    wrap.querySelector('div').textContent = d.expected_response || 'Error';
+    wrap.querySelector('div').style.animation = 'none';
+    wrap.querySelector('div').offsetHeight; // reflow
+    wrap.querySelector('div').style.animation = 'fadeSlideUp 0.3s ease both';
+  } catch(e) {
+    showToast('Compute failed', 'error');
+  }
+}
+
+// ─── Console / WebSocket ────────────────────────────────────────────
+function connectWebSocket() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  ws.onopen = () => appendLog('INFO', 'Connected to server console');
+  ws.onclose = () => {
+    appendLog('WARN', 'Console disconnected. Reconnecting in 3s...');
+    setTimeout(connectWebSocket, 3000);
+  };
+  ws.onerror = () => {};
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'log') {
+        appendLog(msg.level || 'INFO', msg.message);
+      } else if (msg.type === 'request') {
+        requestCount++;
+        document.getElementById('statRequests').textContent = requestCount;
+        appendLog(msg.level || 'INFO', msg.message);
+        // Refresh table on license-changing events
+        if (msg.refresh) refreshLicenses();
+      } else if (msg.type === 'stats') {
+        if (msg.request_count !== undefined) {
+          requestCount = msg.request_count;
+          document.getElementById('statRequests').textContent = requestCount;
+        }
+      }
+    } catch {
+      appendLog('INFO', event.data);
+    }
+  };
+}
+
+function appendLog(level, message) {
+  const body = document.getElementById('consoleBody');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+
+  // Highlight patterns in the message
+  let htmlMsg = escHtml(message);
+  htmlMsg = htmlMsg.replace(/serial=([A-Za-z0-9]+)/g, 'serial=<span class="hl-serial">$1</span>');
+  htmlMsg = htmlMsg.replace(/hash=([a-f0-9]{8})\.\.\./g, 'hash=<span class="hl-hash">$1</span>...');
+  htmlMsg = htmlMsg.replace(/(GRANTED|LICENSED|OK|granted)/gi, '<span class="hl-granted">$1</span>');
+  htmlMsg = htmlMsg.replace(/(DENIED|UNLICENSED|REVOKED|denied)/gi, '<span class="hl-denied">$1</span>');
+
+  line.innerHTML = `<span class="log-time">${time}</span><span class="log-level ${level}">${level}</span><span class="log-msg">${htmlMsg}</span>`;
+  body.appendChild(line);
+
+  logLines++;
+  const badge = document.getElementById('logCount');
+  badge.textContent = logLines;
+  badge.classList.remove('flash');
+  badge.offsetHeight; // reflow
+  badge.classList.add('flash');
+
+  // Auto-scroll if enabled
+  if (autoScroll) {
+    body.scrollTop = body.scrollHeight;
+  }
+
+  // Keep max 500 lines
+  while (body.children.length > 500) {
+    body.removeChild(body.firstChild);
+  }
+}
+
+function toggleConsole() {
+  document.getElementById('consoleContainer').classList.toggle('collapsed');
+}
+
+function clearConsole() {
+  document.getElementById('consoleBody').innerHTML = '';
+  logLines = 0;
+  document.getElementById('logCount').textContent = '0';
+  appendLog('INFO', 'Console cleared');
+}
+
+function toggleAutoScroll() {
+  autoScroll = !autoScroll;
+  const btn = document.getElementById('autoScrollBtn');
+  btn.style.opacity = autoScroll ? '1' : '0.4';
+  showToast(`Auto-scroll ${autoScroll ? 'enabled' : 'disabled'}`, 'info');
+}
+
+// ─── Utils ──────────────────────────────────────────────────────────
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function animateCounter(id, target) {
+  const el = document.getElementById(id);
+  const current = parseInt(el.textContent) || 0;
+  if (current === target) return;
+  const diff = target - current;
+  const steps = Math.min(Math.abs(diff), 20);
+  const dur = 400;
+  let step = 0;
+  const timer = setInterval(() => {
+    step++;
+    const progress = step / steps;
+    const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+    el.textContent = Math.round(current + diff * eased);
+    if (step >= steps) {
+      el.textContent = target;
+      clearInterval(timer);
+    }
+  }, dur / steps);
+}
+
+function showToast(msg, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  const icons = { success: '✓', error: '✕', info: 'ℹ' };
+  toast.innerHTML = `<span>${icons[type] || 'ℹ'}</span> ${escHtml(msg)}`;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('out');
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+}
+
+// Keyboard shortcut: backtick to toggle console
+document.addEventListener('keydown', (e) => {
+  if (e.key === '`' && !e.ctrlKey && !e.altKey && !e.target.matches('input')) {
+    e.preventDefault();
+    toggleConsole();
+  }
+});
+</script>
+
+</body>
+</html>
