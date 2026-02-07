@@ -4,11 +4,13 @@
 #             package it into a flashable Magisk/KSU module zip.
 #
 # Usage:
-#   ./build.sh              Build binary only
-#   ./build.sh --pack       Build binary + package module zip
-#   ./build.sh --module     Package module zip only (skip compile)
-#   ./build.sh --clean      Remove all build artifacts
-#   ./build.sh --help       Show this help
+#   ./build.sh                    Build binary only (release)
+#   ./build.sh --debug            Build debug binary (no license/anti-tamper)
+#   ./build.sh --pack             Build release + package module zip
+#   ./build.sh --pack --debug     Build debug + package module zip
+#   ./build.sh --module           Package module zip only (skip compile)
+#   ./build.sh --clean            Remove all build artifacts
+#   ./build.sh --help             Show this help
 # ─────────────────────────────────────────────────────────────────────
 set -e
 
@@ -29,14 +31,17 @@ BINARY="$OUTDIR/bypass_daemon"
 
 # ─── Usage ───────────────────────────────────────────────────────────
 usage() {
-    echo "Usage: $0 [OPTION]"
+    echo "Usage: $0 [OPTIONS...]"
     echo ""
-    echo "  (no flag)     Build the Android ARM64 binary (release)"
-    echo "  --debug       Build debug binary (no license checks, no anti-tamper)"
-    echo "  --pack        Build binary + package flashable module zip"
-    echo "  --module      Package module zip only (requires prior build)"
-    echo "  --clean       Remove all build artifacts"
-    echo "  --help, -h    Show this help"
+    echo "  (no flag)           Build the Android ARM64 binary (release)"
+    echo "  --debug             Build debug binary (no license checks, no anti-tamper)"
+    echo "  --pack              Build binary + package flashable module zip"
+    echo "  --pack --debug      Build debug + package module zip"
+    echo "  --module            Package module zip only (requires prior build)"
+    echo "  --clean             Remove all build artifacts"
+    echo "  --help, -h          Show this help"
+    echo ""
+    echo "Flags can be combined in any order."
     exit 0
 }
 
@@ -216,12 +221,32 @@ do_package() {
 }
 
 # ─── Main ────────────────────────────────────────────────────────────
-case "${1:-build}" in
-    --help|-h)  usage ;;
-    --clean)    do_clean ;;
-    --module)   do_package ;;
-    --pack)     do_compile; do_package ;;
-    --debug)    DEBUG_BUILD_FLAG=1 do_compile ;;
-    build|"")   do_compile ;;
-    *)          echo "Unknown option: $1"; usage ;;
-esac
+DO_COMPILE=0
+DO_PACKAGE=0
+DEBUG_BUILD_FLAG=0
+
+if [ $# -eq 0 ]; then
+    DO_COMPILE=1
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)   usage ;;
+        --clean)     do_clean ;;
+        --module)    DO_PACKAGE=1 ;;
+        --pack)      DO_COMPILE=1; DO_PACKAGE=1 ;;
+        --debug)     DO_COMPILE=1; DEBUG_BUILD_FLAG=1 ;;
+        build)       DO_COMPILE=1 ;;
+        *)           echo "Unknown option: $arg"; usage ;;
+    esac
+done
+
+export DEBUG_BUILD_FLAG
+
+if [ "$DO_COMPILE" = "1" ]; then
+    do_compile
+fi
+
+if [ "$DO_PACKAGE" = "1" ]; then
+    do_package
+fi
