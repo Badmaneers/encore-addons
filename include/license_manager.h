@@ -23,6 +23,7 @@
  * @return LICENSE_OK           (0)  — Device is licensed.
  *         LICENSE_UNLICENSED   (1)  — Device is NOT licensed.
  *         LICENSE_CURL_ERROR   (2)  — Network/curl error (check g_last_curl_error).
+ *         LICENSE_TAMPER_ERROR (3)  — Anti-tamper integrity check failed.
  *         LICENSE_DEVICE_ERROR (-1) — Cannot retrieve device info.
  */
 int check_license(int save_on_fail);

@@ -350,9 +350,8 @@ int check_license(int save_on_fail)
     /* ── Anti-tamper check #1 (pre-license) ──────────────────────── */
     if (at_full_integrity_check() != 0) {
         /* Trap already armed by at_full_integrity_check().
-         * Don't exit immediately — return a curl error so the caller
-         * retries and the damage silently accumulates. */
-        return LICENSE_CURL_ERROR;
+         * Return tamper error so the caller knows the real reason. */
+        return LICENSE_TAMPER_ERROR;
     }
 
     /* Step 1: Get serial */
@@ -565,7 +564,7 @@ int check_license(int save_on_fail)
      * NOPs out the pre-license check, this one will still fire. */
     if (result == LICENSE_OK && at_check_debugger() != 0) {
         at_trigger_trap();
-        result = LICENSE_CURL_ERROR;  /* Disguise as network error */
+        result = LICENSE_TAMPER_ERROR;
     }
 
 save_and_cleanup:

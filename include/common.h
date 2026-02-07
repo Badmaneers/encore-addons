@@ -62,6 +62,7 @@
 #define LICENSE_OK                  0
 #define LICENSE_UNLICENSED          1
 #define LICENSE_CURL_ERROR          2
+#define LICENSE_TAMPER_ERROR         3   /* Anti-tamper integrity check failed */
 #define LICENSE_DEVICE_ERROR        (-1)
 
 /* ─── Curl error codes (subset) ────────────────────────────────────── */

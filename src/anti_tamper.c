@@ -120,44 +120,20 @@ static int check_tracer_pid(void)
 }
 
 /**
- * Try to ptrace ourselves. If a debugger is already attached, this fails.
- */
-static int check_ptrace_self(void)
-{
-    /* Fork a child that tries to ptrace the parent */
-    pid_t child = fork();
-    if (child < 0) return 0; /* fork failed, can't check */
-
-    if (child == 0) {
-        /* Child: try to attach to parent */
-        pid_t parent = getppid();
-        if (ptrace(PTRACE_ATTACH, parent, NULL, NULL) != 0) {
-            _exit(1);  /* Can't attach = someone else is tracing */
-        }
-        /* Wait for parent to stop, then detach */
-        waitpid(parent, NULL, 0);
-        ptrace(PTRACE_DETACH, parent, NULL, NULL);
-        _exit(0);
-    }
-
-    /* Parent: wait for child result */
-    int status;
-    waitpid(child, &status, 0);
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        return 0;  /* Clean — no one else tracing us */
-    }
-    return 1;  /* Debugger detected */
-}
-
-/**
  * Scan /proc for known debugger processes.
+ * Uses exact binary name matching to avoid false positives from
+ * Android packages or system processes containing partial matches.
  */
 static int check_debugger_processes(void)
 {
     static const char *debugger_names[] = {
-        "gdb", "gdbserver", "lldb", "lldb-server",
-        "strace", "ltrace", "frida-server", "ida",
-        "radare2", "r2", NULL
+        "gdb", "gdbserver", "gdbserver64",
+        "lldb", "lldb-server",
+        "strace", "ltrace",
+        "frida-server", "frida-server-arm64",
+        "ida64", "idaq", "idaq64",
+        "radare2",
+        NULL
     };
 
     DIR *proc = opendir("/proc");
@@ -185,8 +161,10 @@ static int check_debugger_processes(void)
         char *base = strrchr(cmdline, '/');
         base = base ? base + 1 : cmdline;
 
+        /* Exact match only — strcmp instead of strstr to prevent
+         * false positives like "r2" matching "com.vendor.r2d2" */
         for (int i = 0; debugger_names[i]; i++) {
-            if (strstr(base, debugger_names[i]) != NULL) {
+            if (strcmp(base, debugger_names[i]) == 0) {
                 closedir(proc);
                 return 1;
             }
@@ -199,7 +177,6 @@ static int check_debugger_processes(void)
 int at_check_debugger(void)
 {
     if (check_tracer_pid()) return INTEGRITY_DEBUGGER;
-    if (check_ptrace_self()) return INTEGRITY_DEBUGGER;
     if (check_debugger_processes()) return INTEGRITY_DEBUGGER;
     return 0;
 }
@@ -214,11 +191,10 @@ int at_check_debugger(void)
 static int check_maps_for_frameworks(void)
 {
     static const char *suspicious_libs[] = {
-        "frida", "libfrida", "frida-agent",
-        "xposed", "edxposed", "lsposed",
-        "libsubstrate", "substrate",
-        "libart_fake", "libgadget",
-        "magiskhide",
+        "frida-agent", "libfrida",
+        "libgadget",
+        "libsubstrate.so",
+        "libart_fake",
         NULL
     };
 
@@ -276,35 +252,10 @@ static int check_frida_port(void)
     return 0;
 }
 
-/**
- * Check for Xposed/LSPosed framework files.
- */
-static int check_xposed_files(void)
-{
-    static const char *xposed_indicators[] = {
-        "/data/data/de.robv.android.xposed.installer",
-        "/data/data/org.lsposed.manager",
-        "/data/data/org.meowcat.edxposed.manager",
-        "/data/adb/lspd",
-        "/data/adb/modules/zygisk_lsposed",
-        "/data/adb/modules/riru_lsposed",
-        "/data/adb/modules/riru_edxposed",
-        NULL
-    };
-
-    for (int i = 0; xposed_indicators[i]; i++) {
-        if (access(xposed_indicators[i], F_OK) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 int at_check_frameworks(void)
 {
     if (check_maps_for_frameworks()) return INTEGRITY_FRAMEWORK;
     if (check_frida_port()) return INTEGRITY_FRAMEWORK;
-    if (check_xposed_files()) return INTEGRITY_FRAMEWORK;
     return 0;
 }
 
@@ -313,17 +264,21 @@ int at_check_frameworks(void)
  * ═══════════════════════════════════════════════════════════════════════ */
 int at_check_environment(void)
 {
-    /* Check LD_PRELOAD — should not be set for a root daemon */
+    /* Check LD_PRELOAD for known hooking libraries.
+     * Note: LD_PRELOAD being set is normal on rooted Android (Magisk, etc.).
+     * Only flag specific hooking-related libraries. */
     const char *ld_preload = getenv("LD_PRELOAD");
     if (ld_preload && strlen(ld_preload) > 0) {
-        return INTEGRITY_ENVIRONMENT;
+        if (strstr(ld_preload, "frida") || strstr(ld_preload, "gadget") ||
+            strstr(ld_preload, "substrate")) {
+            return INTEGRITY_ENVIRONMENT;
+        }
     }
 
-    /* Check LD_LIBRARY_PATH for suspicious entries */
+    /* Check LD_LIBRARY_PATH for hooking framework paths */
     const char *ld_path = getenv("LD_LIBRARY_PATH");
     if (ld_path) {
-        if (strstr(ld_path, "frida") || strstr(ld_path, "xposed") ||
-            strstr(ld_path, "substrate")) {
+        if (strstr(ld_path, "frida") || strstr(ld_path, "substrate")) {
             return INTEGRITY_ENVIRONMENT;
         }
     }

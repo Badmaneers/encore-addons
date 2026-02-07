@@ -64,6 +64,12 @@ static void handle_license_failure(int result)
         disable_module();
         exit(1);
     }
+
+    if (result == LICENSE_TAMPER_ERROR) {
+        /* Anti-tamper already armed the booby trap.
+         * Don't reveal details — just silently exit. */
+        exit(1);
+    }
 }
 #endif /* !DEBUG_BUILD */
 
@@ -157,6 +163,29 @@ int main(int argc, char *argv[])
     }
 #endif
 
+    /* ── Step 2: --integrity-test (diagnose anti-tamper checks) ──── */
+    if (argc >= 2 && strcmp(argv[1], "--integrity-test") == 0) {
+        at_init(argv[0]);
+        int r;
+        printf("Running integrity diagnostics...\n\n");
+
+        r = at_check_debugger();
+        printf("  [%s] Debugger detection (TracerPid + /proc scan)\n",
+               r ? "FAIL" : " OK ");
+
+        r = at_check_frameworks();
+        printf("  [%s] Framework detection (maps + Frida port)\n",
+               r ? "FAIL" : " OK ");
+
+        r = at_check_environment();
+        printf("  [%s] Environment check (LD_PRELOAD + emulator)\n",
+               r ? "FAIL" : " OK ");
+
+        r = at_full_integrity_check();
+        printf("\n  Overall: %s\n", r ? "FAIL — would block license check" : "PASS");
+        return r ? 1 : 0;
+    }
+
     /* ── Step 2a: --license-check (standalone license verification) ── */
     if (argc >= 2 && strcmp(argv[1], "--license-check") == 0) {
 #ifdef DEBUG_BUILD
@@ -175,6 +204,10 @@ int main(int argc, char *argv[])
         }
         if (result == LICENSE_UNLICENSED) {
             fprintf(stderr, "License check: UNLICENSED\n");
+            return 1;
+        }
+        if (result == LICENSE_TAMPER_ERROR) {
+            fprintf(stderr, "License check: INTEGRITY ERROR\n");
             return 1;
         }
         fprintf(stderr, "License check: DEVICE ERROR\n");
@@ -201,6 +234,9 @@ int main(int argc, char *argv[])
                         "If you believe this is a mistake, please contact the maintainer.\n\n"
                         "For more information on licensing and pricing, visit:\n%s",
                         LICENSE_INFO_URL);
+        } else if (result == LICENSE_TAMPER_ERROR) {
+            fatal_error("Device integrity check failed.\n"
+                        "Please ensure no debugging tools are active.");
         } else {
             fatal_error("Unable to retrieve device details required for license verification.\n"
                         "Please contact the maintainer for assistance.");
@@ -266,7 +302,7 @@ int main(int argc, char *argv[])
             sleep(LICENSE_BOOT_RETRY_DELAY);
             continue;
         }
-        /* UNLICENSED or DEVICE_ERROR — no point retrying */
+        /* UNLICENSED, DEVICE_ERROR, or TAMPER_ERROR — no point retrying */
         break;
     }
 

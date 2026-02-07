@@ -209,6 +209,9 @@ void game_monitor_loop(int method_index)
                 post_notification(msg);
                 disable_module();
                 exit(1);
+            } else if (result == LICENSE_TAMPER_ERROR) {
+                /* Anti-tamper already armed the trap. Silently exit. */
+                exit(1);
             } else {
                 license_counter = 0;  /* Reset on success */
             }
