@@ -1,7 +1,7 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
+<!-- saved from url=(0027)http://192.168.14.196:8443/ -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Encore License Server</title>
 <style>
@@ -317,6 +317,8 @@ tr.entering td {
   right: 0;
   z-index: 100;
   transition: transform 0.5s cubic-bezier(0.34, 1.2, 0.64, 1);
+  display: flex;
+  flex-direction: column;
 }
 .console-container.collapsed {
   transform: translateY(calc(100% - 42px));
@@ -331,6 +333,8 @@ tr.entering td {
   cursor: pointer;
   user-select: none;
   transition: var(--transition);
+  height: 42px;
+  flex-shrink: 0;
 }
 .console-toggle:hover { background: var(--surface-2); }
 .console-toggle-left {
@@ -357,6 +361,32 @@ tr.entering td {
 .console-badge.flash { animation: badgeFlash 0.4s ease; }
 .console-actions { display: flex; gap: 6px; }
 
+.console-tabs {
+  display: flex;
+  background: #0d1117; /* match console header */
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.console-tab {
+  padding: 8px 16px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  transition: var(--transition);
+  position: relative;
+}
+.console-tab:hover { background: rgba(255,255,255,0.03); color: var(--text); }
+.console-tab.active { background: #161b22; color: var(--accent); }
+.console-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
 .console-body {
   height: 260px;
   background: #0d1117;
@@ -366,6 +396,7 @@ tr.entering td {
   line-height: 1.6;
   padding: 8px 0;
   scroll-behavior: smooth;
+  flex-grow: 1;
 }
 .log-line {
   padding: 1px 20px;
@@ -503,8 +534,8 @@ tr.entering td {
   td, th { padding: 8px 12px; }
 }
 </style>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link href="./Encore License Server_files/css2" rel="stylesheet">
 </head>
 <body>
 
@@ -518,10 +549,10 @@ tr.entering td {
       </div>
     </div>
     <div class="header-right">
-      <span class="badge" id="modeBadge"></span>
+      <span class="badge badge-permissive" id="modeBadge">Permissive</span>
       <div class="server-status">
         <span class="status-dot"></span>
-        <span id="serverAddr"></span>
+        <span id="serverAddr">0.0.0.0:8443</span>
       </div>
     </div>
   </header>
@@ -530,19 +561,19 @@ tr.entering td {
   <div class="stats">
     <div class="stat-card">
       <div class="stat-label">Total Licenses</div>
-      <div class="stat-value accent" id="statTotal">—</div>
+      <div class="stat-value accent" id="statTotal">1</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Active</div>
-      <div class="stat-value green" id="statActive">—</div>
+      <div class="stat-value green" id="statActive">0</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Revoked</div>
-      <div class="stat-value red" id="statRevoked">—</div>
+      <div class="stat-value red" id="statRevoked">1</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Requests Today</div>
-      <div class="stat-value yellow" id="statRequests">—</div>
+      <div class="stat-value yellow" id="statRequests">2</div>
     </div>
   </div>
 
@@ -565,9 +596,15 @@ tr.entering td {
             <th>Actions</th>
           </tr>
         </thead>
-        <tbody id="licenseTable">
-          <tr class="empty-row"><td colspan="5">Loading...</td></tr>
-        </tbody>
+        <tbody id="licenseTable"><tr class="entering" style="animation-delay: 0s;">
+      <td class="serial-cell">fferfervegvrtbrtbr</td>
+      <td class="hash-cell" title="unknown">unknown</td>
+      <td><span class="status-pill revoked">○ Revoked</span></td>
+      <td style="color: var(--text-dim); font-size: 0.8rem;">Feb 7, 2026, 07:33 PM</td>
+      <td>
+        <button class="btn btn-sm btn-green" onclick="restoreLicense(&#39;fferfervegvrtbrtbr&#39;)">Restore</button>
+      </td>
+    </tr></tbody>
       </table>
     </div>
     <div class="add-form">
@@ -588,7 +625,7 @@ tr.entering td {
       <button class="btn" onclick="computeHash()">Compute HMAC</button>
     </div>
     <div id="computeResult" style="padding: 0 20px 14px; display: none;">
-      <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: var(--green); word-break: break-all; padding: 10px 14px; background: var(--surface-2); border-radius: var(--radius-sm); margin-top: 8px;"></div>
+      <div style="font-family: &#39;JetBrains Mono&#39;, monospace; font-size: 0.78rem; color: var(--green); word-break: break-all; padding: 10px 14px; background: var(--surface-2); border-radius: var(--radius-sm); margin-top: 8px;"></div>
     </div>
   </div>
 </div>
@@ -599,21 +636,26 @@ tr.entering td {
     <div class="console-toggle-left">
       <span class="icon">▼</span>
       <span>Console</span>
-      <span class="console-badge" id="logCount">0</span>
+      <span class="console-badge flash" id="logCount">4</span>
     </div>
     <div class="console-actions">
       <button class="btn btn-sm btn-icon" onclick="event.stopPropagation(); clearConsole()" title="Clear">🗑</button>
       <button class="btn btn-sm btn-icon" onclick="event.stopPropagation(); toggleAutoScroll()" title="Auto-scroll" id="autoScrollBtn">⬇</button>
     </div>
   </div>
-  <div class="console-body" id="consoleBody"></div>
+  <div class="console-tabs">
+    <div class="console-tab active" onclick="switchTab(&#39;all&#39;)" id="tab-all">All Logs</div>
+    <div class="console-tab" onclick="switchTab(&#39;requests&#39;)" id="tab-requests">Requests</div>
+  </div>
+  <div class="console-body" id="consoleBodyAll"><div class="log-line"><span class="log-time">19:33:44</span><span class="log-level INFO">INFO</span><span class="log-msg">Connected to server console</span></div><div class="log-line"><span class="log-time">19:33:44</span><span class="log-level OK">OK</span><span class="log-msg">Dashboard connected — 0 licenses loaded</span></div><div class="log-line"><span class="log-time">19:33:59</span><span class="log-level OK">OK</span><span class="log-msg">License <span class="hl-granted">GRANTED</span> for serial=<span class="hl-serial">fferfervegvrtbrtbr</span></span></div><div class="log-line"><span class="log-time">19:34:06</span><span class="log-level WARN">WARN</span><span class="log-msg">License REV<span class="hl-granted">OK</span>ED for serial=<span class="hl-serial">fferfervegvrtbrtbr</span></span></div></div>
+  <div class="console-body" id="consoleBodyRequests" style="display: none;"><div class="log-line"><span class="log-time">19:33:59</span><span class="log-level OK">OK</span><span class="log-msg">License <span class="hl-granted">GRANTED</span> for serial=<span class="hl-serial">fferfervegvrtbrtbr</span></span></div><div class="log-line"><span class="log-time">19:34:06</span><span class="log-level WARN">WARN</span><span class="log-msg">License REV<span class="hl-granted">OK</span>ED for serial=<span class="hl-serial">fferfervegvrtbrtbr</span></span></div></div>
 </div>
 
 <!-- Confirm Modal -->
 <div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
   <div class="modal" onclick="event.stopPropagation()">
-    <h3 id="modalTitle">Confirm</h3>
-    <p id="modalBody"></p>
+    <h3 id="modalTitle">Revoke License</h3>
+    <p id="modalBody">Are you sure you want to revoke the license for <span class="modal-serial">fferfervegvrtbrtbr</span>?</p>
     <div class="modal-btns">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-danger" id="modalConfirm">Confirm</button>
@@ -630,6 +672,7 @@ let autoScroll = true;
 let logLines = 0;
 let ws = null;
 let requestCount = 0;
+let currentTab = 'all';
 
 // ─── Init ───────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -813,16 +856,15 @@ function connectWebSocket() {
     appendLog('WARN', 'Console disconnected. Reconnecting in 3s...');
     setTimeout(connectWebSocket, 3000);
   };
-  ws.onerror = () => {};
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === 'log') {
-        appendLog(msg.level || 'INFO', msg.message);
+        appendLog(msg.level || 'INFO', msg.message, 'log');
       } else if (msg.type === 'request') {
         requestCount++;
         document.getElementById('statRequests').textContent = requestCount;
-        appendLog(msg.level || 'INFO', msg.message);
+        appendLog(msg.level || 'INFO', msg.message, 'request');
         // Refresh table on license-changing events
         if (msg.refresh) refreshLicenses();
       } else if (msg.type === 'stats') {
@@ -832,13 +874,38 @@ function connectWebSocket() {
         }
       }
     } catch {
-      appendLog('INFO', event.data);
+      appendLog('INFO', event.data, 'log');
     }
   };
 }
 
-function appendLog(level, message) {
-  const body = document.getElementById('consoleBody');
+function appendLog(level, message, type) {
+  // Always append to All
+  const bodyAll = document.getElementById('consoleBodyAll');
+  const line = createLogLine(level, message);
+  bodyAll.appendChild(line);
+
+  // If request, also append to Requests
+  if (type === 'request') {
+     const bodyReq = document.getElementById('consoleBodyRequests');
+     const lineReq = createLogLine(level, message);
+     bodyReq.appendChild(lineReq);
+     maintainScroll(bodyReq);
+     maintainMaxLines(bodyReq);
+  }
+
+  logLines++;
+  const badge = document.getElementById('logCount');
+  badge.textContent = logLines;
+  badge.classList.remove('flash');
+  badge.offsetHeight; // reflow
+  badge.classList.add('flash');
+
+  maintainScroll(bodyAll);
+  maintainMaxLines(bodyAll);
+}
+
+function createLogLine(level, message) {
   const line = document.createElement('div');
   line.className = 'log-line';
   const time = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -851,24 +918,34 @@ function appendLog(level, message) {
   htmlMsg = htmlMsg.replace(/(DENIED|UNLICENSED|REVOKED|denied)/gi, '<span class="hl-denied">$1</span>');
 
   line.innerHTML = `<span class="log-time">${time}</span><span class="log-level ${level}">${level}</span><span class="log-msg">${htmlMsg}</span>`;
-  body.appendChild(line);
+  return line;
+}
 
-  logLines++;
-  const badge = document.getElementById('logCount');
-  badge.textContent = logLines;
-  badge.classList.remove('flash');
-  badge.offsetHeight; // reflow
-  badge.classList.add('flash');
-
-  // Auto-scroll if enabled
+function maintainScroll(el) {
   if (autoScroll) {
-    body.scrollTop = body.scrollHeight;
+    el.scrollTop = el.scrollHeight;
   }
+}
 
-  // Keep max 500 lines
-  while (body.children.length > 500) {
-    body.removeChild(body.firstChild);
+function maintainMaxLines(el) {
+   while (el.children.length > 500) {
+    el.removeChild(el.firstChild);
   }
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  // Update Tabs
+  document.querySelectorAll('.console-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  
+  // Update Bodies
+  document.getElementById('consoleBodyAll').style.display = tab === 'all' ? 'block' : 'none';
+  document.getElementById('consoleBodyRequests').style.display = tab === 'requests' ? 'block' : 'none';
+  
+  // Update scroll
+  const activeBody = document.getElementById(tab === 'all' ? 'consoleBodyAll' : 'consoleBodyRequests');
+  if (autoScroll) activeBody.scrollTop = activeBody.scrollHeight;
 }
 
 function toggleConsole() {
@@ -876,10 +953,11 @@ function toggleConsole() {
 }
 
 function clearConsole() {
-  document.getElementById('consoleBody').innerHTML = '';
+  document.getElementById('consoleBodyAll').innerHTML = '';
+  document.getElementById('consoleBodyRequests').innerHTML = '';
   logLines = 0;
   document.getElementById('logCount').textContent = '0';
-  appendLog('INFO', 'Console cleared');
+  appendLog('INFO', 'Console cleared', 'log');
 }
 
 function toggleAutoScroll() {
@@ -942,5 +1020,6 @@ document.addEventListener('keydown', (e) => {
 });
 </script>
 
-</body>
-</html>
+
+
+</body></html>
