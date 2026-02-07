@@ -1,3 +1,2 @@
-build/
 build_android/
-tests/
+server.log
