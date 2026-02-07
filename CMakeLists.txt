@@ -32,6 +32,7 @@ set(SOURCES
     src/safety_monitor.c
     src/file_watcher.c
     src/crypto_utils.c
+    src/anti_tamper.c
 )
 
 # ─── Main binary ─────────────────────────────────────────────────────

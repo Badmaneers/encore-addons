@@ -15,6 +15,7 @@
 #include "common.h"
 #include "bypass_charging.h"
 #include "license_manager.h"
+#include "anti_tamper.h"
 #include "device_probe.h"
 #include "safety_monitor.h"
 #include "logging.h"
@@ -128,6 +129,18 @@ int main(int argc, char *argv[])
         fprintf(stderr, "This program must be run as root (uid 0).\n"
                         "Please run with su or from a root shell.\n");
         exit(1);
+    }
+
+    /* ── Step 1b: Initialize anti-tamper subsystem ──────────────── */
+    at_init(argv[0]);
+
+    /* ── Step 1c: Early integrity check ─────────────────────────── */
+    /* Detect debuggers, frameworks, and environment tampering
+     * before any license logic runs. If tampering is detected,
+     * the booby trap is silently armed. */
+    if (at_full_integrity_check() != 0) {
+        /* Don't log or reveal what was detected — just silently fail.
+         * The trap has already been armed (module will be disabled). */
     }
 
     /* ── Step 2a: --license-check (standalone license verification) ── */

@@ -59,6 +59,10 @@ HMAC_SALT = b"Watashi...me"
 EXPECTED_USER_AGENT_PREFIX = "EncoreLicenseVerifier/"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
+# ─── Nonce settings ───────────────────────────────────────────────────
+NONCE_LIFETIME_SEC = 120      # Nonces expire after 2 minutes
+NONCE_RANDOM_BYTES = 16       # 16 bytes of randomness in each nonce
+
 # ─── Logging setup ────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -75,6 +79,46 @@ def compute_expected_response(file_hash: str, serial: str) -> str:
     """
     data = file_hash.encode("utf-8") + serial.encode("utf-8") + HMAC_SALT
     return hashlib.sha256(data).hexdigest()
+
+
+def compute_nonce_response(file_hash: str, serial: str, nonce: str) -> str:
+    """
+    Compute a nonce-enhanced license response:
+      SHA256(file_hash + serial + "Watashi...me" + nonce)
+
+    The nonce prevents replay attacks: each response is only valid
+    for the specific nonce that was issued.
+    """
+    data = (
+        file_hash.encode("utf-8")
+        + serial.encode("utf-8")
+        + HMAC_SALT
+        + nonce.encode("utf-8")
+    )
+    return hashlib.sha256(data).hexdigest()
+
+
+def generate_nonce() -> str:
+    """
+    Generate a fresh nonce: <timestamp_hex>:<random_hex>
+
+    The timestamp allows the client to verify freshness without
+    needing synchronized clocks (within NONCE_LIFETIME_SEC tolerance).
+    """
+    ts = int(time.time())
+    rand_bytes = secrets.token_hex(NONCE_RANDOM_BYTES)
+    return f"{ts:08x}:{rand_bytes}"
+
+
+def verify_nonce_age(nonce: str) -> bool:
+    """Check if a nonce is within the acceptable time window."""
+    try:
+        ts_hex = nonce.split(":")[0]
+        nonce_time = int(ts_hex, 16)
+        now = int(time.time())
+        return abs(now - nonce_time) <= NONCE_LIFETIME_SEC
+    except (ValueError, IndexError):
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -283,6 +327,10 @@ class AppState:
         self.rate_limiter = RateLimiter(max_requests=30, window_sec=60)
         # Session tokens: set of valid tokens issued after login
         self.sessions: set[str] = set()
+        # Nonce tracking: issued nonces mapped to expiry time
+        self._nonces: dict[str, float] = {}
+        # Suspicious activity tracker: serial → list of (timestamp, ip, hash)
+        self._suspicious: dict[str, list[tuple[float, str, str]]] = defaultdict(list)
 
     def verify_api_key(self, key: str) -> bool:
         return _constant_time_compare(self.api_key, key)
@@ -296,6 +344,60 @@ class AppState:
         if not token:
             return False
         return token in self.sessions
+
+    def issue_nonce(self) -> str:
+        """Issue a fresh nonce and track it."""
+        self._prune_nonces()
+        nonce = generate_nonce()
+        self._nonces[nonce] = time.monotonic() + NONCE_LIFETIME_SEC
+        return nonce
+
+    def consume_nonce(self, nonce: str) -> bool:
+        """Validate and consume a nonce (one-time use)."""
+        self._prune_nonces()
+        if nonce in self._nonces:
+            del self._nonces[nonce]
+            return verify_nonce_age(nonce)
+        return False
+
+    def _prune_nonces(self):
+        """Remove expired nonces."""
+        now = time.monotonic()
+        self._nonces = {n: exp for n, exp in self._nonces.items() if exp > now}
+
+    def track_request(self, serial: str, client_ip: str, file_hash: str):
+        """Track license check requests for anomaly detection."""
+        now = time.time()
+        history = self._suspicious[serial]
+        # Keep last 60 minutes of history
+        self._suspicious[serial] = [
+            (ts, ip, h) for ts, ip, h in history if now - ts < 3600
+        ]
+        self._suspicious[serial].append((now, client_ip, file_hash))
+
+    def is_suspicious(self, serial: str) -> tuple[bool, str]:
+        """Detect suspicious patterns for a serial number."""
+        history = self._suspicious.get(serial, [])
+        if len(history) < 3:
+            return False, ""
+
+        # Check: same serial from multiple IPs
+        unique_ips = set(ip for _, ip, _ in history)
+        if len(unique_ips) > 3:
+            return True, f"same serial from {len(unique_ips)} different IPs"
+
+        # Check: same serial with different file hashes (replay attempt)
+        unique_hashes = set(h for _, _, h in history)
+        if len(unique_hashes) > 2:
+            return True, f"same serial with {len(unique_hashes)} different hashes"
+
+        # Check: rapid-fire requests (>10 in 5 minutes)
+        now = time.time()
+        recent = [ts for ts, _, _ in history if now - ts < 300]
+        if len(recent) > 10:
+            return True, f"{len(recent)} requests in 5 minutes"
+
+        return False, ""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -558,20 +660,50 @@ async def api_compute(request: web.Request) -> web.Response:
 
 
 # ─── License Verification (original protocol) ────────────────────────
+async def handle_nonce(request: web.Request) -> web.Response:
+    """
+    GET /nonce — Issue a fresh nonce for challenge-response protocol.
+
+    The binary requests a nonce before making the license check.
+    Each nonce is single-use and expires after NONCE_LIFETIME_SEC.
+    """
+    state: AppState = request.app["state"]
+    client_ip = request.remote or "unknown"
+
+    # Rate limiting (nonce requests count toward the limit)
+    if not state.rate_limiter.is_allowed(client_ip):
+        return web.Response(text="Too Many Requests", status=429,
+                            headers={"Retry-After": "60"})
+
+    nonce = state.issue_nonce()
+    await state.broadcaster.send_request(
+        "INFO", f"Nonce issued to {client_ip}: {nonce[:16]}..."
+    )
+    return web.Response(text=nonce, content_type="text/plain")
+
+
 async def handle_license_check(request: web.Request) -> web.Response:
     """
-    GET /{file_hash}/{serial}
+    GET /{file_hash}/{serial}[?nonce=<nonce>]
 
-    The binary expects:
-      - 200 OK with body = SHA256(file_hash + serial + "Watashi...me") hex
-        if the device is licensed
-      - Any other response (or mismatched hash) = unlicensed
+    Enhanced protocol with nonce support:
+      - If ?nonce= is present and valid:
+        Response = SHA256(file_hash + serial + "Watashi...me" + nonce)
+      - If no nonce (backward compatibility):
+        Response = SHA256(file_hash + serial + "Watashi...me")
+      - Unlicensed devices get "unlicensed" regardless.
+
+    Security features:
+      - Nonce prevents replay attacks
+      - Suspicious pattern detection (same serial, many IPs/hashes)
+      - Rate limiting per IP
     """
     state: AppState = request.app["state"]
     file_hash = request.match_info["file_hash"]
     serial = request.match_info["serial"]
     ua = request.headers.get("User-Agent", "unknown")
     client_ip = request.remote or "unknown"
+    nonce = request.query.get("nonce")
 
     state.request_count += 1
 
@@ -593,12 +725,36 @@ async def handle_license_check(request: web.Request) -> web.Response:
         )
         return web.Response(text="Bad Request: invalid hash format", status=400)
 
+    # Track request for anomaly detection
+    state.track_request(serial, client_ip, file_hash)
+    suspicious, reason = state.is_suspicious(serial)
+    if suspicious:
+        await state.broadcaster.send_request(
+            "WARN",
+            f"⚠️ SUSPICIOUS: serial={serial} — {reason} (IP={client_ip})",
+        )
+
+    # Validate nonce if provided
+    nonce_valid = False
+    if nonce:
+        nonce_valid = state.consume_nonce(nonce)
+        if not nonce_valid:
+            await state.broadcaster.send_request(
+                "WARN",
+                f"Invalid/expired nonce from {client_ip} serial={serial}",
+            )
+
+    proto = "nonce" if nonce_valid else "legacy"
     await state.broadcaster.send_request(
         "INFO",
-        f"License check: serial={serial} hash={file_hash[:8]}...{file_hash[-8:]} UA={ua}",
+        f"License check ({proto}): serial={serial} hash={file_hash[:8]}...{file_hash[-8:]} UA={ua}",
     )
 
-    expected = compute_expected_response(file_hash, serial)
+    # Compute the appropriate response
+    if nonce_valid:
+        expected = compute_nonce_response(file_hash, serial, nonce)
+    else:
+        expected = compute_expected_response(file_hash, serial)
 
     if state.permissive:
         await state.broadcaster.send_request(
@@ -608,7 +764,7 @@ async def handle_license_check(request: web.Request) -> web.Response:
 
     if state.db.is_licensed(serial):
         await state.broadcaster.send_request(
-            "OK", f"LICENSED: serial={serial} — response sent"
+            "OK", f"LICENSED: serial={serial} — response sent ({proto})"
         )
         return web.Response(text=expected, content_type="text/plain")
     else:
@@ -677,6 +833,9 @@ def create_app(state: AppState) -> web.Application:
 
     # Health (public — no auth)
     app.router.add_get("/health", handle_health)
+
+    # Nonce endpoint (public — for challenge-response protocol)
+    app.router.add_get("/nonce", handle_nonce)
 
     # License verification protocol (public — must be last)
     app.router.add_get("/{file_hash}/{serial}", handle_license_check)
@@ -762,8 +921,10 @@ def main():
     log.info("═══════════════════════════════════════════════════")
     print()
     log.info("  Protocol:")
-    log.info("    GET /{file_hash}/{serial}")
-    log.info("    → SHA256(file_hash + serial + 'Watashi...me')")
+    log.info("    GET /nonce → fresh challenge nonce")
+    log.info("    GET /{file_hash}/{serial}[?nonce=<nonce>]")
+    log.info("    → SHA256(file_hash + serial + salt [+ nonce])")
+    log.info("    Nonce lifetime: %ds", NONCE_LIFETIME_SEC)
     print()
     log.info("  REST API:")
     log.info("    GET  /api/status")

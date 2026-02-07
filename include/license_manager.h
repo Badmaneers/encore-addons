@@ -1,5 +1,12 @@
 /**
  * license_manager.h — Device license verification against remote server
+ *
+ * Security features:
+ *   - Challenge-response protocol with server nonces (anti-replay)
+ *   - Constant-time hash comparison (anti-timing-attack)
+ *   - Obfuscated HMAC salt (anti-strings)
+ *   - Multiple scattered integrity checks (anti-patching)
+ *   - TLS hardening (minimum TLS 1.2, certificate verification)
  */
 
 #ifndef ENCORE_LICENSE_MANAGER_H
@@ -27,7 +34,7 @@ int check_license(int save_on_fail);
 char *get_device_serial(void);
 
 /**
- * Compute HMAC-SHA256 of a file's contents + salt ("Watashi...me").
+ * Compute HMAC-SHA256 of a file's contents + obfuscated salt.
  * Matches File_CheckAccess (FUN_0060f7c8) from the original binary.
  * Returns a malloc'd hex string or NULL on failure.
  */

@@ -45,7 +45,9 @@
 #define LICENSE_INFO_URL            "https://t.me/rem01schannel/723"
 #define LICENSE_PATH_FMT            "/sdcard/%s_license_%s"
 #define LICENSE_URL_FMT             LICENSE_BASE_URL "/%s/%s"
-#define LICENSE_HMAC_SALT           "Watashi...me"   /* Inferred: partial reconstruction */
+/* NOTE: HMAC salt is NO LONGER stored as a plaintext constant.
+ * It is reconstructed at runtime from obfuscated fragments in anti_tamper.c.
+ * Use at_reconstruct_salt() to obtain the salt. */
 
 /* ─── License retry ────────────────────────────────────────────────── */
 #define LICENSE_BOOT_MAX_RETRIES    3     /* Max retries on boot before disabling */

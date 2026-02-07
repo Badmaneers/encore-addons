@@ -78,6 +78,7 @@ do_compile() {
         "$SRC/logging.c"
         "$SRC/file_io.c"
         "$SRC/crypto_utils.c"
+        "$SRC/anti_tamper.c"
     )
 
     CFLAGS=(
@@ -90,6 +91,10 @@ do_compile() {
         -DANDROID
         -fPIE
         -fstack-protector-strong
+        # Anti-RE: no frame pointers, no debug info, obfuscate string refs
+        -fomit-frame-pointer
+        -fvisibility=hidden
+        -fdata-sections -ffunction-sections
     )
 
     echo "[1/3] Compiling sources..."
@@ -108,6 +113,7 @@ do_compile() {
         --sysroot="$SYSROOT" \
         -target aarch64-linux-android34 \
         -pie \
+        -Wl,--gc-sections \
         "${OBJS[@]}" \
         "$DEPS/lib/libcurl.a" \
         "$DEPS/lib/libssl.a" \

@@ -19,6 +19,7 @@
 #include "bypass_charging.h"
 #include "device_probe.h"
 #include "license_manager.h"
+#include "anti_tamper.h"
 #include "logging.h"
 #include <signal.h>
 
@@ -180,6 +181,9 @@ void game_monitor_loop(int method_index)
         if (license_counter < LICENSE_RECHECK_ITERS) {
             license_counter++;
         } else {
+            /* Run integrity check before license recheck */
+            at_full_integrity_check();
+
             int result = check_license(0);
             if (result == LICENSE_CURL_ERROR) {
                 if (g_last_curl_error == CURLE_PEER_FAILED_VERIFY_CODE) {

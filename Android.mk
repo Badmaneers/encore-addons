@@ -22,7 +22,8 @@ LOCAL_SRC_FILES := \
     src/license_manager.c \
     src/safety_monitor.c \
     src/file_watcher.c \
-    src/crypto_utils.c
+    src/crypto_utils.c \
+    src/anti_tamper.c
 
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
 LOCAL_CFLAGS     := -Wall -Wextra -O3 -DANDROID

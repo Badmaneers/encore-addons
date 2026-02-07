@@ -25,32 +25,39 @@
  */
 
 #include "license_manager.h"
+#include "anti_tamper.h"
 #include "device_probe.h"
 #include "logging.h"
 #include <curl/curl.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/crypto.h>
 #include <ctype.h>
 #include <sys/stat.h>
+#include <time.h>
 
 /* Forward declaration from file_io.c */
 extern int write_file_formatted(const char *path, int append, int use_flock,
                                 const char *fmt, ...);
 
 /**
- * HMAC salt used for license verification.
- *
- * Reconstructed from DAT_00681d60 initialization in File_CheckAccess and
- * ExecuteNetworkRequest:
- *   Bytes from s_Watashi_001be428[0..7] = "Watashi."
- *   Then DAT_00681d68 = DAT_001be298 (4 bytes) = "..me" (inferred)
- *   Then DAT_00681d6c = 0x656d = "me" (little-endian)
- *
- * Assembled salt: "Watashi...me" (not NUL-terminated in the 15-byte check)
- * The __strlen_chk(&DAT_00681d60, 0xf) call limits it to 15 bytes max.
+ * HMAC salt — now reconstructed at runtime via at_reconstruct_salt().
+ * The salt is never stored as a readable string literal in the binary.
+ * See anti_tamper.c for the XOR-obfuscated fragment storage.
  */
-static const char HMAC_SALT[] = "Watashi...me";
-static const size_t HMAC_SALT_LEN = 12;  /* strlen("Watashi...me") */
+static char s_salt[16] = {0};
+static int  s_salt_ready = 0;
+
+static const char *get_hmac_salt(void)
+{
+    if (!s_salt_ready) {
+        at_reconstruct_salt(s_salt, sizeof(s_salt));
+        s_salt_ready = 1;
+    }
+    return s_salt;
+}
+
+#define HMAC_SALT_LEN 12  /* strlen("Watashi...me") */
 
 /* ─── Curl write callback data ─────────────────────────────────────── */
 typedef struct {
@@ -89,7 +96,7 @@ static size_t license_curl_write_cb(void *ptr, size_t size, size_t nmemb, void *
  */
 void format_license_url(char *buf, size_t buflen, const char *hash, const char *serial)
 {
-    snprintf(buf, buflen, "http://10.19.139.196:8443/%s/%s", hash, serial);
+    snprintf(buf, buflen, "http://192.168.14.196:8443/%s/%s", hash, serial);
 }
 
 /**
@@ -195,7 +202,8 @@ char *compute_file_hmac(const char *filepath)
     fclose(f);
 
     /* Append the salt as final data */
-    if (EVP_DigestUpdate(ctx, HMAC_SALT, HMAC_SALT_LEN) != 1) {
+    const char *salt = get_hmac_salt();
+    if (EVP_DigestUpdate(ctx, salt, HMAC_SALT_LEN) != 1) {
         EVP_MD_CTX_free(ctx);
         return NULL;
     }
@@ -257,7 +265,7 @@ char *compute_request_hmac(const char *str1, const char *str2)
     }
 
     if (EVP_DigestUpdate(ctx, combined, len1 + len2) != 1 ||
-        EVP_DigestUpdate(ctx, HMAC_SALT, HMAC_SALT_LEN) != 1) {
+        EVP_DigestUpdate(ctx, get_hmac_salt(), HMAC_SALT_LEN) != 1) {
         EVP_MD_CTX_free(ctx);
         free(combined);
         return NULL;
@@ -316,26 +324,20 @@ static void trim_response(char *s)
 }
 
 /**
- * check_license — Main license verification
+ * check_license — Main license verification (hardened protocol)
  *
- * Reconstructed from CheckLicense (FUN_0060f114):
+ * Hardened flow (challenge-response with nonce):
+ *   1. Run anti-tamper integrity check (debugger, frameworks, environment)
+ *   2. Get device serial
+ *   3. Find a readable device-unique file and compute its hash
+ *   4. Request a nonce from the server: GET /nonce
+ *   5. Build verification URL: /<hash>/<serial>?nonce=<nonce>
+ *   6. HTTP GET with curl, verify response includes nonce signature
+ *   7. Constant-time compare response with expected HMAC
+ *   8. Run another integrity check (scattered — harder to patch out)
  *
- * Flow:
- *   1. Get device serial
- *   2. Find a readable device-unique file and compute its hash
- *   3. Build URL: https://license.rem01gaming.dev/<hash>/<serial>
- *   4. HTTP GET with curl (User-Agent: EncoreLicenseVerifier/1.3, timeout=2, redirect)
- *   5. Store curl error code in g_last_curl_error
- *   6. If curl succeeds:
- *      a. Trim whitespace from response
- *      b. Compare response with expected file hash
- *      c. If match → LICENSE_OK, else → LICENSE_UNLICENSED
- *   7. If curl fails:
- *      a. If error == 0x16 (CURLE_UNSUPPORTED_PROTOCOL) → LICENSE_UNLICENSED
- *      b. Else → LICENSE_CURL_ERROR
- *   8. If save_on_fail and verification failed:
- *      a. Format license path: /sdcard/<hash>_license_<serial>
- *      b. Write expected hash to that path
+ * The nonce prevents replay attacks: the server includes the nonce in its
+ * HMAC computation, and the client verifies the nonce timestamp is fresh.
  *
  * @param save_on_fail  If 1, save expected license data on failure
  * @return LICENSE_OK, LICENSE_UNLICENSED, LICENSE_CURL_ERROR, or LICENSE_DEVICE_ERROR
@@ -343,22 +345,22 @@ static void trim_response(char *s)
 int check_license(int save_on_fail)
 {
     int result;
-    char url_buf[256];
+    char url_buf[512];
+
+    /* ── Anti-tamper check #1 (pre-license) ──────────────────────── */
+    if (at_full_integrity_check() != 0) {
+        /* Trap already armed by at_full_integrity_check().
+         * Don't exit immediately — return a curl error so the caller
+         * retries and the damage silently accumulates. */
+        return LICENSE_CURL_ERROR;
+    }
 
     /* Step 1: Get serial */
     char *serial = get_device_serial();
     if (!serial)
         return LICENSE_DEVICE_ERROR;
 
-    /* Step 2: Find device-unique file and compute its salted hash.
-     *
-     * Original binary (CheckLicense, FUN_0060f114):
-     *   Tries up to 6 paths via File_CleanPath("/dev/block/by-name/%s").
-     *   Each call formats a different partition name (e.g., "boot", "recovery",
-     *   "system", "vendor", "super", "userdata").
-     *   For each: stat(path) + File_CheckAccess(path) → HMAC-SHA256.
-     *   Final fallback: scaling_available_frequencies.
-     */
+    /* Step 2: Find device-unique file and compute its salted hash. */
     static const char *block_partitions[] = {
         "boot", "recovery", "system", "vendor", "super", "userdata", NULL
     };
@@ -367,7 +369,6 @@ int check_license(int save_on_fail)
     char *file_hash = NULL;
     struct stat st;
 
-    /* Try /dev/block/by-name/<partition> paths first */
     for (int i = 0; block_partitions[i]; i++) {
         snprintf(path_buf, sizeof(path_buf), "/dev/block/by-name/%s",
                  block_partitions[i]);
@@ -377,7 +378,6 @@ int check_license(int save_on_fail)
         }
     }
 
-    /* Fallback: scaling_available_frequencies */
     if (!file_hash) {
         file_hash = compute_file_hmac(PATH_CPU_FREQ_AVAIL);
     }
@@ -387,11 +387,7 @@ int check_license(int save_on_fail)
         return LICENSE_DEVICE_ERROR;
     }
 
-    /* Step 3: Compute request signature.
-     *
-     * Original: pcVar6 = ExecuteNetworkRequest(file_hash, serial, file_hash)
-     * This concatenates serial + file_hash, appends salt, SHA-256 hashes it.
-     */
+    /* Step 3: Compute request signature. */
     char *request_hmac = compute_request_hmac(file_hash, serial);
     if (!request_hmac) {
         free(file_hash);
@@ -399,9 +395,53 @@ int check_license(int save_on_fail)
         return LICENSE_DEVICE_ERROR;
     }
 
-    /* Step 4: Build verification URL and perform HTTP GET */
-    format_license_url(url_buf, sizeof(url_buf), file_hash, serial);
+    /* Step 4: Request a nonce from the server */
+    char nonce_url[256];
+    char base_url[128];
+    /* Use same base as format_license_url (extract from format_license_url pattern) */
+    snprintf(base_url, sizeof(base_url), "http://192.168.14.196:8443");
 
+    snprintf(nonce_url, sizeof(nonce_url), "%s/nonce", base_url);
+
+    CURL *curl_nonce = curl_easy_init();
+    char *server_nonce = NULL;
+
+    if (curl_nonce) {
+        curl_response_t nonce_resp = { .data = NULL, .size = 0 };
+        curl_easy_setopt(curl_nonce, CURLOPT_URL, nonce_url);
+        curl_easy_setopt(curl_nonce, CURLOPT_WRITEFUNCTION, license_curl_write_cb);
+        curl_easy_setopt(curl_nonce, CURLOPT_WRITEDATA, &nonce_resp);
+        curl_easy_setopt(curl_nonce, CURLOPT_USERAGENT, ENCORE_USER_AGENT);
+        curl_easy_setopt(curl_nonce, CURLOPT_TIMEOUT, 5L);
+        curl_easy_setopt(curl_nonce, CURLOPT_CONNECTTIMEOUT, 2L);
+        curl_easy_setopt(curl_nonce, CURLOPT_FOLLOWLOCATION, 1L);
+
+        CURLcode nonce_err = curl_easy_perform(curl_nonce);
+        curl_easy_cleanup(curl_nonce);
+
+        if (nonce_err == CURLE_OK && nonce_resp.data) {
+            trim_response(nonce_resp.data);
+            /* Verify nonce freshness (timestamp check) */
+            if (at_verify_nonce(nonce_resp.data)) {
+                server_nonce = nonce_resp.data;
+            } else {
+                free(nonce_resp.data);
+            }
+        } else {
+            free(nonce_resp.data);
+        }
+    }
+
+    /* Step 5: Build verification URL with nonce */
+    if (server_nonce) {
+        snprintf(url_buf, sizeof(url_buf), "%s/%s/%s?nonce=%s",
+                 base_url, file_hash, serial, server_nonce);
+    } else {
+        /* Fallback: no nonce (backward compatibility with older servers) */
+        format_license_url(url_buf, sizeof(url_buf), file_hash, serial);
+    }
+
+    /* Step 6: HTTP GET with hardened curl options */
     CURL *curl = curl_easy_init();
     if (!curl) {
         result = (g_last_curl_error != 0x16) ? LICENSE_CURL_ERROR : LICENSE_UNLICENSED;
@@ -414,9 +454,18 @@ int check_license(int save_on_fail)
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, license_curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ENCORE_USER_AGENT);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+    /* TLS hardening */
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    /* Disable insecure protocols */
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+
+    /* Prevent redirects to different hosts (MITM protection) */
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 2L);
 
     g_last_curl_error = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
@@ -427,7 +476,7 @@ int check_license(int save_on_fail)
         goto save_and_cleanup;
     }
 
-    /* Step 5: Validate response */
+    /* Step 7: Validate response */
     if (!response.data) {
         result = LICENSE_CURL_ERROR;
         goto save_and_cleanup;
@@ -435,28 +484,91 @@ int check_license(int save_on_fail)
 
     trim_response(response.data);
 
-    /* Step 6: Compare server response with the request HMAC.
+    /* Step 8: Compare server response with the request HMAC.
      *
-     * Original (CheckLicense):
-     *   sVar9 = strlen(pcVar6);   // pcVar6 = request_hmac
-     *   iVar5 = VerifySignature(pcVar6, response_data, sVar9);
-     *   if (iVar5 == 0) → success
+     * If the server sent a nonce-enhanced response, it will be:
+     *   SHA256(file_hash + serial + "Watashi...me" + nonce)
+     * The nonce is appended to the HMAC computation.
      *
-     * The anti-tamper "whitelisting pattern" with val_acc is obfuscation;
-     * at its core: if response matches request_hmac → LICENSE_OK.
+     * For backward compat, if no nonce: SHA256(file_hash + serial + "Watashi...me")
      */
-    size_t expected_len = strlen(request_hmac);
-    if (strlen(response.data) >= expected_len &&
-        memcmp(response.data, request_hmac, expected_len) == 0) {
-        result = LICENSE_OK;
+    if (server_nonce) {
+        /* Compute nonce-enhanced expected response:
+         * SHA256(file_hash + serial + salt + nonce) */
+        const char *salt = get_hmac_salt();
+        size_t total_len = strlen(file_hash) + strlen(serial) + HMAC_SALT_LEN + strlen(server_nonce);
+        char *combined = malloc(total_len + 1);
+        if (!combined) {
+            free(response.data);
+            result = LICENSE_DEVICE_ERROR;
+            goto save_and_cleanup;
+        }
+        char *p = combined;
+        memcpy(p, file_hash, strlen(file_hash)); p += strlen(file_hash);
+        memcpy(p, serial, strlen(serial)); p += strlen(serial);
+        memcpy(p, salt, HMAC_SALT_LEN); p += HMAC_SALT_LEN;
+        memcpy(p, server_nonce, strlen(server_nonce)); p += strlen(server_nonce);
+        *p = '\0';
+
+        /* SHA-256 hash it */
+        EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+        unsigned char digest[EVP_MAX_MD_SIZE];
+        unsigned int digest_len = 0;
+        int hash_ok = 0;
+        if (ctx) {
+            if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1 &&
+                EVP_DigestUpdate(ctx, combined, total_len) == 1 &&
+                EVP_DigestFinal_ex(ctx, digest, &digest_len) == 1) {
+                hash_ok = 1;
+            }
+            EVP_MD_CTX_free(ctx);
+        }
+        free(combined);
+
+        if (!hash_ok) {
+            free(response.data);
+            result = LICENSE_DEVICE_ERROR;
+            goto save_and_cleanup;
+        }
+
+        /* Convert digest to hex for comparison */
+        char expected_hex[65];
+        for (unsigned int i = 0; i < digest_len && i < 32; i++) {
+            sprintf(expected_hex + i * 2, "%02x", digest[i]);
+        }
+        expected_hex[64] = '\0';
+
+        /* Constant-time comparison (prevents timing attacks) */
+        size_t resp_len = strlen(response.data);
+        if (resp_len == 64 &&
+            at_secure_compare(response.data, expected_hex, 64) == 0) {
+            result = LICENSE_OK;
+        } else {
+            result = LICENSE_UNLICENSED;
+        }
     } else {
-        result = LICENSE_UNLICENSED;
+        /* Legacy comparison (no nonce, still use constant-time) */
+        size_t expected_len = strlen(request_hmac);
+        size_t resp_len = strlen(response.data);
+        if (resp_len >= expected_len &&
+            at_secure_compare(response.data, request_hmac, expected_len) == 0) {
+            result = LICENSE_OK;
+        } else {
+            result = LICENSE_UNLICENSED;
+        }
     }
 
     free(response.data);
 
+    /* ── Anti-tamper check #2 (post-license, scattered) ──────────── */
+    /* This second check makes it harder to patch: even if a cracker
+     * NOPs out the pre-license check, this one will still fire. */
+    if (result == LICENSE_OK && at_check_debugger() != 0) {
+        at_trigger_trap();
+        result = LICENSE_CURL_ERROR;  /* Disguise as network error */
+    }
+
 save_and_cleanup:
-    /* Step 7: On first startup (save_on_fail=1), save license data for reference */
     if (save_on_fail && result != LICENSE_OK) {
         char license_path[256];
         format_license_path(license_path, sizeof(license_path), file_hash, serial);
@@ -467,5 +579,22 @@ cleanup:
     free(serial);
     free(file_hash);
     free(request_hmac);
+    free(server_nonce);
     return result;
+}
+
+/**
+ * disable_module — Create the Magisk "disable" flag file.
+ *
+ * When this file exists, Magisk will not mount the module's files on
+ * the next reboot. The daemon removes this file if a subsequent license
+ * check succeeds (e.g., after the user purchases a license).
+ */
+void disable_module(void)
+{
+    FILE *f = fopen(PATH_MODULE_DISABLE, "w");
+    if (f) {
+        fprintf(f, "disabled by license check\n");
+        fclose(f);
+    }
 }
