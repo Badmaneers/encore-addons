@@ -30,9 +30,18 @@ import argparse
 import os
 import sys
 import ssl
+import base64
 import logging
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+except ImportError:
+    print("ERROR: cryptography is required. Install with: pip install cryptography")
+    sys.exit(1)
 
 try:
     from aiohttp import web
@@ -67,23 +76,64 @@ def compute_expected_response(file_hash: str, serial: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 #  License Database
 # ═══════════════════════════════════════════════════════════════════════
-class LicenseDatabase:
-    """Manages the license database (JSON file on disk)."""
+# ─── Encryption helpers ───────────────────────────────────────────────
+# Fixed salt so the same passphrase always produces the same key.
+# This is safe because PBKDF2 with 480 000 iterations is already slow
+# enough to resist brute-force, and the salt only needs to be unique
+# per application (not per user).
+_DB_KDF_SALT = b"encore-license-db-v1"
+_DB_KDF_ITERATIONS = 480_000
 
-    def __init__(self, db_path: str):
+
+def _derive_fernet_key(passphrase: str) -> bytes:
+    """Derive a Fernet key from a passphrase using PBKDF2-HMAC-SHA256."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=_DB_KDF_SALT,
+        iterations=_DB_KDF_ITERATIONS,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
+
+
+class LicenseDatabase:
+    """Manages the license database (encrypted JSON file on disk)."""
+
+    def __init__(self, db_path: str, passphrase: str):
         self.db_path = db_path
         self.licenses: dict = {}
+        self._fernet = Fernet(_derive_fernet_key(passphrase))
         self._load()
 
     def _load(self):
         if os.path.exists(self.db_path):
             try:
-                with open(self.db_path, "r") as f:
-                    self.licenses = json.load(f)
-                log.info(
-                    "Loaded %d licenses from %s", len(self.licenses), self.db_path
-                )
-            except (json.JSONDecodeError, IOError) as e:
+                raw = Path(self.db_path).read_bytes()
+                # Try decrypting first (encrypted DB)
+                try:
+                    plaintext = self._fernet.decrypt(raw)
+                    self.licenses = json.loads(plaintext.decode("utf-8"))
+                    log.info(
+                        "Loaded %d licenses from %s (encrypted)",
+                        len(self.licenses),
+                        self.db_path,
+                    )
+                except InvalidToken:
+                    # Maybe it's a legacy plaintext JSON — try to migrate
+                    try:
+                        self.licenses = json.loads(raw.decode("utf-8"))
+                        log.warning(
+                            "Loaded %d licenses from UNENCRYPTED %s — migrating to encrypted",
+                            len(self.licenses),
+                            self.db_path,
+                        )
+                        self.save()  # Re-save encrypted
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        log.error(
+                            "Failed to decrypt %s — wrong passphrase?", self.db_path
+                        )
+                        self.licenses = {}
+            except IOError as e:
                 log.error("Failed to load license DB: %s", e)
                 self.licenses = {}
         else:
@@ -92,8 +142,9 @@ class LicenseDatabase:
 
     def save(self):
         try:
-            with open(self.db_path, "w") as f:
-                json.dump(self.licenses, f, indent=2)
+            plaintext = json.dumps(self.licenses, indent=2).encode("utf-8")
+            encrypted = self._fernet.encrypt(plaintext)
+            Path(self.db_path).write_bytes(encrypted)
         except IOError as e:
             log.error("Failed to save license DB: %s", e)
 
@@ -439,8 +490,14 @@ def main():
     )
     parser.add_argument(
         "--db",
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "licenses.json"),
-        help="Path to license database JSON (default: licenses.json)",
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "licenses.db"),
+        help="Path to encrypted license database (default: licenses.db)",
+    )
+    parser.add_argument(
+        "--db-key",
+        default=os.environ.get("LICENSE_DB_KEY", None),
+        help="Passphrase for encrypting/decrypting the license DB "
+             "(or set LICENSE_DB_KEY env var)",
     )
     parser.add_argument(
         "--tls-cert", default=None, help="Path to TLS certificate file (for HTTPS)"
@@ -450,7 +507,11 @@ def main():
     )
     args = parser.parse_args()
 
-    db = LicenseDatabase(args.db)
+    if not args.db_key:
+        log.error("Database passphrase required: use --db-key or set LICENSE_DB_KEY env var")
+        sys.exit(1)
+
+    db = LicenseDatabase(args.db, args.db_key)
     state = AppState(db, args.permissive, args.bind, args.port)
     app = create_app(state)
 
