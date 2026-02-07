@@ -116,6 +116,14 @@ class LicenseDatabase:
             self.save()
             log.info("Revoked license for serial: %s", serial)
 
+    def delete_license(self, serial: str) -> bool:
+        if serial in self.licenses:
+            del self.licenses[serial]
+            self.save()
+            log.info("Deleted license for serial: %s", serial)
+            return True
+        return False
+
     def list_all(self) -> dict:
         return self.licenses
 
@@ -280,6 +288,27 @@ async def api_license_revoke(request: web.Request) -> web.Response:
     return web.json_response({"status": "revoked", "serial": serial})
 
 
+# ─── API: Delete License ──────────────────────────────────────────────
+async def api_license_delete(request: web.Request) -> web.Response:
+    state: AppState = request.app["state"]
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    serial = data.get("serial", "").strip()
+    if not serial:
+        return web.json_response({"error": "serial is required"}, status=400)
+
+    if state.db.delete_license(serial):
+        await state.broadcaster.send_request(
+            "WARN", f"License DELETED for serial={serial}", refresh=True
+        )
+        return web.json_response({"status": "deleted", "serial": serial})
+    else:
+        return web.json_response({"error": "Serial not found"}, status=404)
+
+
 # ─── API: Compute HMAC ───────────────────────────────────────────────
 async def api_compute(request: web.Request) -> web.Response:
     try:
@@ -388,6 +417,16 @@ async def handle_admin(request: web.Request) -> web.Response:
         )
         return web.json_response({"status": "revoked", "serial": serial})
 
+    elif action == "delete" and len(parts) >= 2:
+        serial = parts[1]
+        if state.db.delete_license(serial):
+            await state.broadcaster.send_request(
+                "WARN", f"License DELETED for serial={serial} (admin)", refresh=True
+            )
+            return web.json_response({"status": "deleted", "serial": serial})
+        else:
+            return web.json_response({"error": "Serial not found"}, status=404)
+
     elif action == "check" and len(parts) >= 2:
         serial = parts[1]
         return web.json_response(
@@ -430,6 +469,7 @@ def create_app(state: AppState) -> web.Application:
     app.router.add_get("/api/licenses", api_licenses)
     app.router.add_post("/api/license/add", api_license_add)
     app.router.add_post("/api/license/revoke", api_license_revoke)
+    app.router.add_post("/api/license/delete", api_license_delete)
     app.router.add_post("/api/compute", api_compute)
 
     # Health

@@ -747,11 +747,12 @@ function renderLicenses(data) {
       <td class="hash-cell" title="${escHtml(hash)}">${escHtml(hash)}</td>
       <td><span class="status-pill ${statusClass}">${statusText}</span></td>
       <td style="color: var(--text-dim); font-size: 0.8rem;">${added}</td>
-      <td>
+      <td style="display: flex; gap: 6px; align-items: center;">
         ${licensed
           ? `<button class="btn btn-sm btn-danger" onclick="confirmRevoke('${escHtml(serial)}')">Revoke</button>`
           : `<button class="btn btn-sm btn-green" onclick="restoreLicense('${escHtml(serial)}')">Restore</button>`
         }
+        <button class="btn btn-sm btn-danger" onclick="confirmDelete('${escHtml(serial)}')" title="Delete permanently">🗑</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -819,6 +820,33 @@ async function restoreLicense(serial) {
     }
   } catch(e) {
     showToast('Failed to restore', 'error');
+  }
+}
+
+function confirmDelete(serial) {
+  document.getElementById('modalTitle').textContent = 'Delete License';
+  document.getElementById('modalBody').innerHTML = `Permanently delete the license for <span class="modal-serial">${escHtml(serial)}</span>? This cannot be undone.`;
+  document.getElementById('modalConfirm').onclick = () => deleteLicense(serial);
+  document.getElementById('modalConfirm').textContent = 'Delete';
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+async function deleteLicense(serial) {
+  closeModal();
+  try {
+    const r = await fetch(`/api/license/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial })
+    });
+    if (r.ok) {
+      showToast(`License deleted for ${serial}`, 'success');
+      refreshLicenses();
+    } else {
+      showToast('Failed to delete — serial not found', 'error');
+    }
+  } catch(e) {
+    showToast('Failed to delete', 'error');
   }
 }
 
