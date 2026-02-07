@@ -3,3 +3,4 @@ server.log
 server/licenses.json
 module/checksums.sha256
 module/libs/arm64-v8a/bypass_chg
+*/*.zip/*
