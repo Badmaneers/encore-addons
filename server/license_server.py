@@ -25,13 +25,17 @@ Usage:
 """
 
 import hashlib
+import hmac
 import json
 import argparse
 import os
+import secrets
 import sys
 import ssl
 import base64
 import logging
+import time
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -71,6 +75,46 @@ def compute_expected_response(file_hash: str, serial: str) -> str:
     """
     data = file_hash.encode("utf-8") + serial.encode("utf-8") + HMAC_SALT
     return hashlib.sha256(data).hexdigest()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Rate Limiter
+# ═══════════════════════════════════════════════════════════════════════
+class RateLimiter:
+    """Token-bucket rate limiter keyed by IP address."""
+
+    def __init__(self, max_requests: int = 30, window_sec: float = 60.0):
+        self.max_requests = max_requests
+        self.window_sec = window_sec
+        self._hits: dict[str, list[float]] = defaultdict(list)
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.monotonic()
+        hits = self._hits[key]
+        # Prune old entries
+        self._hits[key] = [t for t in hits if now - t < self.window_sec]
+        if len(self._hits[key]) >= self.max_requests:
+            return False
+        self._hits[key].append(now)
+        return True
+
+    def remaining(self, key: str) -> int:
+        now = time.monotonic()
+        hits = [t for t in self._hits[key] if now - t < self.window_sec]
+        return max(0, self.max_requests - len(hits))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Authentication Helpers
+# ═══════════════════════════════════════════════════════════════════════
+def _constant_time_compare(a: str, b: str) -> bool:
+    """Constant-time string comparison to prevent timing attacks."""
+    return hmac.compare_digest(a.encode(), b.encode())
+
+
+def _generate_session_token() -> str:
+    """Generate a cryptographically secure session token."""
+    return secrets.token_urlsafe(48)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -226,14 +270,32 @@ class ConsoleBroadcaster:
 #  Application State
 # ═══════════════════════════════════════════════════════════════════════
 class AppState:
-    def __init__(self, db: LicenseDatabase, permissive: bool, bind: str, port: int):
+    def __init__(self, db: LicenseDatabase, permissive: bool, bind: str, port: int,
+                 api_key: str):
         self.db = db
         self.permissive = permissive
         self.bind = bind
         self.port = port
+        self.api_key = api_key
         self.broadcaster = ConsoleBroadcaster()
         self.request_count = 0
         self.start_time = datetime.now()
+        self.rate_limiter = RateLimiter(max_requests=30, window_sec=60)
+        # Session tokens: set of valid tokens issued after login
+        self.sessions: set[str] = set()
+
+    def verify_api_key(self, key: str) -> bool:
+        return _constant_time_compare(self.api_key, key)
+
+    def create_session(self) -> str:
+        token = _generate_session_token()
+        self.sessions.add(token)
+        return token
+
+    def verify_session(self, token: str) -> bool:
+        if not token:
+            return False
+        return token in self.sessions
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -241,8 +303,92 @@ class AppState:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+# ─── Auth helpers for routes ──────────────────────────────────────────
+def _get_session_token(request: web.Request) -> str:
+    """Extract session token from cookie or Authorization header."""
+    # Check cookie first
+    token = request.cookies.get("session")
+    if token:
+        return token
+    # Fallback to Authorization: Bearer <token>
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return ""
+
+
+def _require_auth(handler):
+    """Decorator: reject requests without a valid session."""
+    async def wrapper(request: web.Request) -> web.Response:
+        state: AppState = request.app["state"]
+        token = _get_session_token(request)
+        if not state.verify_session(token):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        return await handler(request)
+    return wrapper
+
+
+# ─── Login / Session ──────────────────────────────────────────────────
+async def handle_login_page(request: web.Request) -> web.Response:
+    """Serve the login page."""
+    state: AppState = request.app["state"]
+    # If already has a valid session, redirect to dashboard
+    token = _get_session_token(request)
+    if state.verify_session(token):
+        raise web.HTTPFound("/")
+    login_path = TEMPLATE_DIR / "login.html"
+    if not login_path.exists():
+        return web.Response(text="Login template not found", status=500)
+    return web.FileResponse(login_path)
+
+
+async def handle_login_api(request: web.Request) -> web.Response:
+    """POST /api/login — authenticate with API key, get a session cookie."""
+    state: AppState = request.app["state"]
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    api_key = data.get("api_key", "")
+    if not state.verify_api_key(api_key):
+        await state.broadcaster.send_log(
+            "WARN", f"Failed login attempt from {request.remote}"
+        )
+        return web.json_response({"error": "Invalid API key"}, status=403)
+
+    token = state.create_session()
+    resp = web.json_response({"status": "ok"})
+    resp.set_cookie(
+        "session", token,
+        httponly=True,
+        samesite="Strict",
+        max_age=86400,  # 24 hours
+        secure=request.secure,
+    )
+    await state.broadcaster.send_log(
+        "OK", f"Admin logged in from {request.remote}"
+    )
+    return resp
+
+
+async def handle_logout(request: web.Request) -> web.Response:
+    """POST /api/logout — invalidate the session."""
+    state: AppState = request.app["state"]
+    token = _get_session_token(request)
+    state.sessions.discard(token)
+    resp = web.json_response({"status": "ok"})
+    resp.del_cookie("session")
+    return resp
+
+
 # ─── Web UI ───────────────────────────────────────────────────────────
 async def handle_index(request: web.Request) -> web.Response:
+    """Serve the dashboard — requires a valid session."""
+    state: AppState = request.app["state"]
+    token = _get_session_token(request)
+    if not state.verify_session(token):
+        raise web.HTTPFound("/login")
     html_path = TEMPLATE_DIR / "index.html"
     if not html_path.exists():
         return web.Response(text="Template not found", status=500)
@@ -254,6 +400,25 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
     state: AppState = request.app["state"]
     ws = web.WebSocketResponse(heartbeat=30.0)
     await ws.prepare(request)
+
+    # Authenticate: client must send {"type": "auth", "token": "..."} first
+    # Also accept session cookie for browser-based connections
+    cookie_token = request.cookies.get("session", "")
+    authenticated = state.verify_session(cookie_token)
+
+    if not authenticated:
+        try:
+            auth_msg = await ws.receive_json(timeout=10.0)
+            if auth_msg.get("type") == "auth":
+                authenticated = state.verify_session(auth_msg.get("token", ""))
+        except Exception:
+            pass
+
+    if not authenticated:
+        await ws.send_json({"type": "error", "message": "Unauthorized"})
+        await ws.close(code=4001, message=b"Unauthorized")
+        return ws
+
     await state.broadcaster.register(ws)
 
     # Send welcome + initial stats
@@ -279,6 +444,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
 
 
 # ─── API: Server Status ──────────────────────────────────────────────
+@_require_auth
 async def api_status(request: web.Request) -> web.Response:
     state: AppState = request.app["state"]
     return web.json_response(
@@ -294,12 +460,14 @@ async def api_status(request: web.Request) -> web.Response:
 
 
 # ─── API: List Licenses ──────────────────────────────────────────────
+@_require_auth
 async def api_licenses(request: web.Request) -> web.Response:
     state: AppState = request.app["state"]
     return web.json_response(state.db.list_all())
 
 
 # ─── API: Add License ────────────────────────────────────────────────
+@_require_auth
 async def api_license_add(request: web.Request) -> web.Response:
     state: AppState = request.app["state"]
     try:
@@ -321,6 +489,7 @@ async def api_license_add(request: web.Request) -> web.Response:
 
 
 # ─── API: Revoke License ─────────────────────────────────────────────
+@_require_auth
 async def api_license_revoke(request: web.Request) -> web.Response:
     state: AppState = request.app["state"]
     try:
@@ -340,6 +509,7 @@ async def api_license_revoke(request: web.Request) -> web.Response:
 
 
 # ─── API: Delete License ──────────────────────────────────────────────
+@_require_auth
 async def api_license_delete(request: web.Request) -> web.Response:
     state: AppState = request.app["state"]
     try:
@@ -361,6 +531,7 @@ async def api_license_delete(request: web.Request) -> web.Response:
 
 
 # ─── API: Compute HMAC ───────────────────────────────────────────────
+@_require_auth
 async def api_compute(request: web.Request) -> web.Response:
     try:
         data = await request.json()
@@ -400,8 +571,19 @@ async def handle_license_check(request: web.Request) -> web.Response:
     file_hash = request.match_info["file_hash"]
     serial = request.match_info["serial"]
     ua = request.headers.get("User-Agent", "unknown")
+    client_ip = request.remote or "unknown"
 
     state.request_count += 1
+
+    # Rate limiting
+    if not state.rate_limiter.is_allowed(client_ip):
+        await state.broadcaster.send_request(
+            "WARN", f"Rate limited: {client_ip} (too many requests)"
+        )
+        return web.Response(
+            text="Too Many Requests", status=429,
+            headers={"Retry-After": "60"},
+        )
 
     # Validate hex hash
     if len(file_hash) != 64 or not all(c in "0123456789abcdef" for c in file_hash):
@@ -449,11 +631,43 @@ def create_app(state: AppState) -> web.Application:
     app = web.Application()
     app["state"] = state
 
-    # Web UI
+    # ── Security headers middleware ──────────────────────────────────
+    @web.middleware
+    async def security_headers(request: web.Request, handler):
+        resp = await handler(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["X-XSS-Protection"] = "1; mode=block"
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # HSTS only if served over TLS
+        if request.secure:
+            resp.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        # CSP: allow self, inline styles/scripts (needed for single-file dashboard),
+        # Google Fonts, and WebSocket connections
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self' ws: wss:; "
+            "img-src 'self' data:; "
+            "frame-ancestors 'none';"
+        )
+        return resp
+
+    app.middlewares.append(security_headers)
+
+    # Auth (no session required)
+    app.router.add_get("/login", handle_login_page)
+    app.router.add_post("/api/login", handle_login_api)
+    app.router.add_post("/api/logout", handle_logout)
+
+    # Web UI (session required — handle_index redirects to /login)
     app.router.add_get("/", handle_index)
     app.router.add_get("/ws", handle_websocket)
 
-    # REST API
+    # REST API (all require auth via @_require_auth)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/licenses", api_licenses)
     app.router.add_post("/api/license/add", api_license_add)
@@ -461,10 +675,10 @@ def create_app(state: AppState) -> web.Application:
     app.router.add_post("/api/license/delete", api_license_delete)
     app.router.add_post("/api/compute", api_compute)
 
-    # Health
+    # Health (public — no auth)
     app.router.add_get("/health", handle_health)
 
-    # License verification protocol (must be last — catches /{hash}/{serial})
+    # License verification protocol (public — must be last)
     app.router.add_get("/{file_hash}/{serial}", handle_license_check)
 
     return app
@@ -500,6 +714,12 @@ def main():
              "(or set LICENSE_DB_KEY env var)",
     )
     parser.add_argument(
+        "--api-key",
+        default=os.environ.get("LICENSE_API_KEY", None),
+        help="API key for admin authentication "
+             "(or set LICENSE_API_KEY env var)",
+    )
+    parser.add_argument(
         "--tls-cert", default=None, help="Path to TLS certificate file (for HTTPS)"
     )
     parser.add_argument(
@@ -511,8 +731,12 @@ def main():
         log.error("Database passphrase required: use --db-key or set LICENSE_DB_KEY env var")
         sys.exit(1)
 
+    if not args.api_key:
+        log.error("API key required: use --api-key or set LICENSE_API_KEY env var")
+        sys.exit(1)
+
     db = LicenseDatabase(args.db, args.db_key)
-    state = AppState(db, args.permissive, args.bind, args.port)
+    state = AppState(db, args.permissive, args.bind, args.port, args.api_key)
     app = create_app(state)
 
     ssl_ctx = None

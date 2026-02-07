@@ -554,6 +554,7 @@ tr.entering td {
         <span class="status-dot"></span>
         <span id="serverAddr">0.0.0.0:8443</span>
       </div>
+      <button class="btn btn-sm btn-danger" onclick="logout()" title="Sign out">⏻ Logout</button>
     </div>
   </header>
 
@@ -684,7 +685,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // ─── Server Info ────────────────────────────────────────────────────
 async function fetchServerInfo() {
   try {
-    const r = await fetch('/api/status');
+    const r = await fetch('/api/status', { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.href = '/login'; return; }
     const d = await r.json();
     const badge = document.getElementById('modeBadge');
     if (d.permissive) {
@@ -705,7 +707,8 @@ async function fetchServerInfo() {
 // ─── Licenses ───────────────────────────────────────────────────────
 async function refreshLicenses() {
   try {
-    const r = await fetch('/api/licenses');
+    const r = await fetch('/api/licenses', { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.href = '/login'; return; }
     const data = await r.json();
     renderLicenses(data);
   } catch(e) {
@@ -880,7 +883,12 @@ function connectWebSocket() {
   ws = new WebSocket(`${proto}//${location.host}/ws`);
 
   ws.onopen = () => appendLog('INFO', 'Connected to server console');
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
+    if (ev.code === 4001) {
+      appendLog('ERROR', 'WebSocket auth failed — redirecting to login...');
+      setTimeout(() => { window.location.href = '/login'; }, 1500);
+      return;
+    }
     appendLog('WARN', 'Console disconnected. Reconnecting in 3s...');
     setTimeout(connectWebSocket, 3000);
   };
@@ -1037,6 +1045,13 @@ function showToast(msg, type = 'info') {
 
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('active');
+}
+
+async function logout() {
+  try {
+    await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch(e) { /* ignore */ }
+  window.location.href = '/login';
 }
 
 // Keyboard shortcut: backtick to toggle console
