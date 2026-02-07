@@ -22,7 +22,7 @@ DEPS="$PROJECT/deps/install"
 MODULE="$PROJECT/module"
 OUTPUT="$PROJECT/encore_bypass_charging.zip"
 
-NDK="/home/zylex/Android/Sdk/ndk/27.0.12077973"
+NDK="$HOME/Android/Sdk/ndk/27.0.12077973"
 TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
 CC="$TOOLCHAIN/bin/clang"
 SYSROOT="$TOOLCHAIN/sysroot"
