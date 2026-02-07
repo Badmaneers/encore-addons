@@ -385,68 +385,6 @@ async def handle_license_check(request: web.Request) -> web.Response:
         return web.Response(text="unlicensed", content_type="text/plain")
 
 
-# ─── Old admin endpoints (backwards compatibility) ────────────────────
-async def handle_admin(request: web.Request) -> web.Response:
-    """Legacy admin API: GET /admin/{action}/[{arg1}]/[{arg2}]"""
-    state: AppState = request.app["state"]
-    path = request.match_info.get("path", "")
-    parts = [p for p in path.split("/") if p]
-
-    if not parts:
-        return web.json_response({"error": "Bad admin request"}, status=400)
-
-    action = parts[0]
-
-    if action == "list":
-        return web.json_response(state.db.list_all())
-
-    elif action == "add" and len(parts) >= 2:
-        serial = parts[1]
-        file_hash = parts[2] if len(parts) >= 3 else "unknown"
-        state.db.add_license(serial, file_hash)
-        await state.broadcaster.send_request(
-            "OK", f"License GRANTED for serial={serial} (admin)", refresh=True
-        )
-        return web.json_response({"status": "added", "serial": serial})
-
-    elif action == "revoke" and len(parts) >= 2:
-        serial = parts[1]
-        state.db.revoke_license(serial)
-        await state.broadcaster.send_request(
-            "WARN", f"License REVOKED for serial={serial} (admin)", refresh=True
-        )
-        return web.json_response({"status": "revoked", "serial": serial})
-
-    elif action == "delete" and len(parts) >= 2:
-        serial = parts[1]
-        if state.db.delete_license(serial):
-            await state.broadcaster.send_request(
-                "WARN", f"License DELETED for serial={serial} (admin)", refresh=True
-            )
-            return web.json_response({"status": "deleted", "serial": serial})
-        else:
-            return web.json_response({"error": "Serial not found"}, status=404)
-
-    elif action == "check" and len(parts) >= 2:
-        serial = parts[1]
-        return web.json_response(
-            {"serial": serial, "licensed": state.db.is_licensed(serial)}
-        )
-
-    elif action == "compute" and len(parts) >= 3:
-        file_hash, serial = parts[1], parts[2]
-        expected = compute_expected_response(file_hash, serial)
-        return web.json_response(
-            {
-                "file_hash": file_hash,
-                "serial": serial,
-                "expected_response": expected,
-            }
-        )
-
-    return web.json_response({"error": "Unknown admin action"}, status=400)
-
-
 # ─── Health check ─────────────────────────────────────────────────────
 async def handle_health(request: web.Request) -> web.Response:
     state: AppState = request.app["state"]
@@ -474,9 +412,6 @@ def create_app(state: AppState) -> web.Application:
 
     # Health
     app.router.add_get("/health", handle_health)
-
-    # Legacy admin API (GET-based, for backward compat)
-    app.router.add_get("/admin/{path:.*}", handle_admin)
 
     # License verification protocol (must be last — catches /{hash}/{serial})
     app.router.add_get("/{file_hash}/{serial}", handle_license_check)
