@@ -14,6 +14,55 @@
 #include "common.h"
 #include <stdarg.h>
 #include <sys/file.h>
+#include <libgen.h>
+
+/**
+ * ensure_parent_dirs — Recursively create parent directories for a file path.
+ *
+ * Similar to `mkdir -p $(dirname path)`.
+ * Needed because open() with O_CREAT only creates the file, not parent dirs.
+ */
+static int ensure_parent_dirs(const char *filepath)
+{
+    char *path_copy = strdup(filepath);
+    if (!path_copy) return -1;
+
+    char *dir = dirname(path_copy);
+
+    /* Skip if the directory already exists */
+    struct stat st;
+    if (stat(dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+        free(path_copy);
+        return 0;
+    }
+
+    /* Walk forward through the path, creating each component */
+    char tmp[1024];
+    snprintf(tmp, sizeof(tmp), "%s", dir);
+    size_t len = strlen(tmp);
+
+    /* Remove trailing slash */
+    if (len > 0 && tmp[len - 1] == '/')
+        tmp[--len] = '\0';
+
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+                free(path_copy);
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        free(path_copy);
+        return -1;
+    }
+
+    free(path_copy);
+    return 0;
+}
 
 /**
  * write_file_formatted — Write a formatted string to a file
@@ -65,6 +114,9 @@ int write_file_formatted(const char *path, int append, int use_flock,
         flags = O_WRONLY | O_CREAT | O_APPEND;
     else
         flags = O_WRONLY | O_CREAT | O_TRUNC;
+
+    /* Ensure parent directories exist (e.g. for node_part config path) */
+    ensure_parent_dirs(path);
 
     fd = open(path, flags, 0644);
     if (fd == -1)

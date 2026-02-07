@@ -35,12 +35,21 @@
 #define PATH_PROC_CMDLINE           "/proc/cmdline"
 #define PATH_CPU_FREQ_AVAIL         "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies"
 
+/* ─── Module paths ─────────────────────────────────────────────────── */
+#define PATH_MODULE_DIR             "/data/adb/modules/encore_addon_bypasschg"
+#define PATH_MODULE_DISABLE         PATH_MODULE_DIR "/disable"
+#define PATH_MODULE_REMOVE          PATH_MODULE_DIR "/remove"
+
 /* ─── License ──────────────────────────────────────────────────────── */
 #define LICENSE_BASE_URL            "https://license.rem01gaming.dev"
 #define LICENSE_INFO_URL            "https://t.me/rem01schannel/723"
 #define LICENSE_PATH_FMT            "/sdcard/%s_license_%s"
 #define LICENSE_URL_FMT             LICENSE_BASE_URL "/%s/%s"
 #define LICENSE_HMAC_SALT           "Watashi...me"   /* Inferred: partial reconstruction */
+
+/* ─── License retry ────────────────────────────────────────────────── */
+#define LICENSE_BOOT_MAX_RETRIES    3     /* Max retries on boot before disabling */
+#define LICENSE_BOOT_RETRY_DELAY    15    /* Seconds between retries */
 
 /* ─── License check return codes ───────────────────────────────────── */
 #define LICENSE_OK                  0

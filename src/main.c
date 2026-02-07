@@ -32,7 +32,7 @@ char             g_hmac_salt[16]     = {0};
 char             g_timestamp_buf[64] = {0};
 
 /**
- * Handle license failure — log, notify, and exit.
+ * Handle license failure — log, notify, disable module, and exit.
  */
 static void handle_license_failure(int result)
 {
@@ -40,6 +40,7 @@ static void handle_license_failure(int result)
         if (g_last_curl_error == CURLE_PEER_FAILED_VERIFY_CODE) {
             log_message(LOG_ERROR, "CURL SSL verification fail (ERROR 60), exiting...");
             post_notification("CURL SSL verification fail (ERROR 60).");
+            disable_module();
             exit(1);
         }
         /* Other curl errors: recoverable, will retry */
@@ -50,6 +51,7 @@ static void handle_license_failure(int result)
         const char *msg = "This device is not licensed to use this module.";
         log_message(LOG_ERROR, "%s", msg);
         post_notification(msg);
+        disable_module();
         exit(1);
     }
 
@@ -57,6 +59,7 @@ static void handle_license_failure(int result)
         const char *msg = "Unable to retrieve device information for license verification.";
         log_message(LOG_ERROR, "%s", msg);
         post_notification(msg);
+        disable_module();
         exit(1);
     }
 }
@@ -127,12 +130,48 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    /* ── Step 2: --test mode (bypass charging hardware detection) ── */
+    /* ── Step 2a: --license-check (standalone license verification) ── */
+    if (argc >= 2 && strcmp(argv[1], "--license-check") == 0) {
+        int result = check_license(0);
+        if (result == LICENSE_OK) {
+            printf("License check: OK ✓\n");
+            return 0;
+        }
+        if (result == LICENSE_CURL_ERROR) {
+            fprintf(stderr, "License check: NETWORK ERROR (curl code %d)\n",
+                    g_last_curl_error);
+            return 2;
+        }
+        if (result == LICENSE_UNLICENSED) {
+            fprintf(stderr, "License check: UNLICENSED\n");
+            return 1;
+        }
+        fprintf(stderr, "License check: DEVICE ERROR\n");
+        return 1;
+    }
+
+    /* ── Step 2b: --test mode (bypass charging hardware detection) ── */
     if (argc >= 2 && strcmp(argv[1], "--test") == 0) {
-        /* Always test bypass charging support first, before license.
-         * If no config exists, run the hardware scan — run_bypass_test()
-         * exits on its own (0 = found working method, 1 = unsupported).
-         * If it succeeds it writes the config file for future runs. */
+        /* Verify license FIRST — reject unlicensed devices before
+         * they can even test bypass charging hardware. */
+        printf("Verifying device license...\n");
+        int result = check_license(1);
+        if (result == LICENSE_OK) {
+            printf("License check: OK ✓\n");
+        } else if (result == LICENSE_CURL_ERROR) {
+            fatal_error("CURL ERROR %d\nPlease check your internet connection and try again.",
+                        g_last_curl_error);
+        } else if (result == LICENSE_UNLICENSED) {
+            fatal_error("This device is not licensed to use this module.\n"
+                        "If you believe this is a mistake, please contact the maintainer.\n\n"
+                        "For more information on licensing and pricing, visit:\n%s",
+                        LICENSE_INFO_URL);
+        } else {
+            fatal_error("Unable to retrieve device details required for license verification.\n"
+                        "Please contact the maintainer for assistance.");
+        }
+
+        /* License OK — now test bypass charging support */
         if (access(PATH_NODE_CONFIG, F_OK) != 0) {
             run_bypass_test();
             /* run_bypass_test() calls exit(), so we only reach here
@@ -149,26 +188,6 @@ int main(int argc, char *argv[])
 
         printf("Bypass charging method: %s (index %d) — OK\n",
                get_bypass_methods()[method_index].name, method_index);
-
-        /* Now verify license */
-        int result = check_license(1);
-        if (result == LICENSE_OK) {
-            printf("License check: OK ✓\n");
-        }
-        if (result == LICENSE_CURL_ERROR) {
-            fatal_error("CURL ERROR %d\nPlease check your internet connection and try again.",
-                        g_last_curl_error);
-        }
-        if (result == LICENSE_UNLICENSED) {
-            fatal_error("This device is not licensed to use this module.\n"
-                        "If you believe this is a mistake, please contact the maintainer.\n\n"
-                        "For more information on licensing and pricing, visit:\n%s",
-                        LICENSE_INFO_URL);
-        }
-        if (result == LICENSE_DEVICE_ERROR) {
-            fatal_error("Unable to retrieve device details required for license verification.\n"
-                        "Please contact the maintainer for assistance.");
-        }
         return 0;
     }
 
@@ -184,25 +203,38 @@ int main(int argc, char *argv[])
     }
 
     /* ── Step 5: Verify license (with retry on curl errors) ─────── */
-    int result;
-    do {
+    /* On boot, give the network time to come up. Retry up to
+     * LICENSE_BOOT_MAX_RETRIES times before giving up and disabling
+     * the module so it won't load on next boot either. */
+    int result = LICENSE_CURL_ERROR;
+    for (int attempt = 0; attempt <= LICENSE_BOOT_MAX_RETRIES; attempt++) {
         result = check_license(0);
+        if (result == LICENSE_OK) {
+            /* Licensed — remove any stale disable flag from a
+             * previous failed boot check. */
+            if (access(PATH_MODULE_DISABLE, F_OK) == 0) {
+                unlink(PATH_MODULE_DISABLE);
+                log_message(LOG_INFO, "License OK — re-enabled module");
+            }
+            break;
+        }
         if (result == LICENSE_CURL_ERROR) {
             if (g_last_curl_error == CURLE_PEER_FAILED_VERIFY_CODE) {
-                exit(1);
+                handle_license_failure(result);  /* fatal SSL → disable + exit */
             }
-            sleep(10);
+            /* Network may not be up yet; wait and retry */
+            log_message(LOG_WARN,
+                        "License check: network error (attempt %d/%d), retrying in %ds...",
+                        attempt + 1, LICENSE_BOOT_MAX_RETRIES, LICENSE_BOOT_RETRY_DELAY);
+            sleep(LICENSE_BOOT_RETRY_DELAY);
             continue;
         }
+        /* UNLICENSED or DEVICE_ERROR — no point retrying */
         break;
-    } while (1);
+    }
 
-    if (result == LICENSE_UNLICENSED || result == LICENSE_DEVICE_ERROR) {
-        /* First-time failure: retry with save */
-        result = check_license(0);
-        if (result != LICENSE_OK) {
-            handle_license_failure(result);
-        }
+    if (result != LICENSE_OK) {
+        handle_license_failure(result);  /* logs, notifies, disables module, exits */
     }
 
     /* ── Step 6: Decide operating mode ──────────────────────────── */

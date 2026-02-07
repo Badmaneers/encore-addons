@@ -50,4 +50,10 @@ void format_license_path(char *buf, size_t buflen, const char *hash, const char 
  */
 void format_license_url(char *buf, size_t buflen, const char *hash, const char *serial);
 
+/**
+ * Disable the module by creating the Magisk "disable" flag file.
+ * On next reboot, Magisk will skip mounting this module's files.
+ */
+void disable_module(void);
+
 #endif /* ENCORE_LICENSE_MANAGER_H */

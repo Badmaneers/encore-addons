@@ -186,6 +186,7 @@ void game_monitor_loop(int method_index)
                     log_message(LOG_ERROR,
                                 "CURL SSL verification fail (ERROR 60), exiting...");
                     post_notification("CURL SSL verification fail (ERROR 60).");
+                    disable_module();
                     exit(1);
                 }
                 license_counter = 0;  /* Retry on next cycle */
@@ -193,11 +194,13 @@ void game_monitor_loop(int method_index)
                 const char *msg = "This device is not licensed to use this module.";
                 log_message(LOG_ERROR, "%s", msg);
                 post_notification(msg);
+                disable_module();
                 exit(1);
             } else if (result == LICENSE_DEVICE_ERROR) {
                 const char *msg = "Unable to retrieve device information for license verification.";
                 log_message(LOG_ERROR, "%s", msg);
                 post_notification(msg);
+                disable_module();
                 exit(1);
             } else {
                 license_counter = 0;  /* Reset on success */
