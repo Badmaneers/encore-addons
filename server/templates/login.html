@@ -274,7 +274,7 @@ body::before {
           spellcheck="false"
           required
         >
-        <button type="button" class="toggle-vis" onclick="toggleVisibility()" title="Show/hide">👁</button>
+        <button type="button" class="toggle-vis" onclick="toggleVisibility(this)" title="Show password">👁</button>
       </div>
     </div>
     <button type="submit" class="btn-login" id="loginBtn">
@@ -332,9 +332,17 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
-function toggleVisibility() {
+function toggleVisibility(btn) {
   const inp = document.getElementById('apiKey');
-  inp.type = inp.type === 'password' ? 'text' : 'password';
+  if (inp.type === 'password') {
+    inp.type = 'text';
+    btn.textContent = '✕'; // Visual indicator to hide
+    btn.title = 'Hide password';
+  } else {
+    inp.type = 'password';
+    btn.textContent = '👁';
+    btn.title = 'Show password';
+  }
 }
 
 // Enter key submits
