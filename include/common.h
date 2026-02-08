@@ -49,7 +49,7 @@
 #define PATH_MODULE_REMOVE          PATH_MODULE_DIR "/remove"
 
 /* ─── License ──────────────────────────────────────────────────────── */
-#define LICENSE_INFO_URL            "https://t.me/rem01schannel/723"
+#define LICENSE_INFO_URL            "https://t.me/i_am_very_delulu"
 /* NOTE: HMAC salt is NO LONGER stored as a plaintext constant.
  * It is reconstructed at runtime from obfuscated fragments in anti_tamper.c.
  * Use at_reconstruct_salt() to obtain the salt. */
