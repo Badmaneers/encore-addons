@@ -3,6 +3,7 @@
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline';">
 <title>Encore License Server</title>
 <style>
 /* ─── CSS Reset & Variables ──────────────────────────────────────── */
@@ -752,10 +753,10 @@ function renderLicenses(data) {
       <td style="color: var(--text-dim); font-size: 0.8rem;">${added}</td>
       <td style="display: flex; gap: 6px; align-items: center;">
         ${licensed
-          ? `<button class="btn btn-sm btn-danger" onclick="confirmRevoke('${escHtml(serial)}')">Revoke</button>`
-          : `<button class="btn btn-sm btn-green" onclick="restoreLicense('${escHtml(serial)}')">Restore</button>`
+          ? `<button class="btn btn-sm btn-danger" data-serial="${escHtml(serial)}" onclick="confirmRevoke(this.dataset.serial)">Revoke</button>`
+          : `<button class="btn btn-sm btn-green" data-serial="${escHtml(serial)}" onclick="restoreLicense(this.dataset.serial)">Restore</button>`
         }
-        <button class="btn btn-sm btn-danger" onclick="confirmDelete('${escHtml(serial)}')" title="Delete permanently">🗑</button>
+        <button class="btn btn-sm btn-danger" data-serial="${escHtml(serial)}" onclick="confirmDelete(this.dataset.serial)" title="Delete permanently">🗑</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -1005,9 +1006,13 @@ function toggleAutoScroll() {
 
 // ─── Utils ──────────────────────────────────────────────────────────
 function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function animateCounter(id, target) {
