@@ -54,6 +54,15 @@
  * It is reconstructed at runtime from obfuscated fragments in anti_tamper.c.
  * Use at_reconstruct_salt() to obtain the salt. */
 
+/* ─── License server ───────────────────────────────────────────────── */
+/* Base URL for the license server. Change this when deploying.
+ * Original production URL: "https://license.rem01gaming.dev"
+ * Local development:       "http://<your-ip>:8443"            */
+#define LICENSE_SERVER_BASE_URL     "http://192.168.14.196:8443"
+
+/* ─── Nonce settings ───────────────────────────────────────────────── */
+#define NONCE_LIFETIME_SEC          120   /* must match server's NONCE_LIFETIME_SEC */
+
 /* ─── License retry ────────────────────────────────────────────────── */
 #define LICENSE_BOOT_MAX_RETRIES    3     /* Max retries on boot before disabling */
 #define LICENSE_BOOT_RETRY_DELAY    15    /* Seconds between retries */
@@ -63,6 +72,7 @@
 #define LICENSE_UNLICENSED          1
 #define LICENSE_CURL_ERROR          2
 #define LICENSE_TAMPER_ERROR         3   /* Anti-tamper integrity check failed */
+#define LICENSE_NONCE_ERROR          4   /* Nonce request/validation failed */
 #define LICENSE_DEVICE_ERROR        (-1)
 
 /* ─── Curl error codes (subset) ────────────────────────────────────── */

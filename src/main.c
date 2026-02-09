@@ -49,6 +49,12 @@ static void handle_license_failure(int result)
         return;
     }
 
+    if (result == LICENSE_NONCE_ERROR) {
+        log_message(LOG_WARN, "License nonce verification failed (clock skew or server issue)");
+        /* Nonce errors are potentially recoverable (clock sync, server restart) */
+        return;
+    }
+
     if (result == LICENSE_UNLICENSED) {
         const char *msg = "This device is not licensed to use this module.";
         log_message(LOG_ERROR, "%s", msg);
@@ -202,6 +208,10 @@ int main(int argc, char *argv[])
                     g_last_curl_error);
             return 2;
         }
+        if (result == LICENSE_NONCE_ERROR) {
+            fprintf(stderr, "License check: NONCE ERROR (clock skew or server issue)\n");
+            return 2;
+        }
         if (result == LICENSE_UNLICENSED) {
             fprintf(stderr, "License check: UNLICENSED\n");
             return 1;
@@ -229,6 +239,9 @@ int main(int argc, char *argv[])
         } else if (result == LICENSE_CURL_ERROR) {
             fatal_error("CURL ERROR %d\nPlease check your internet connection and try again.",
                         g_last_curl_error);
+        } else if (result == LICENSE_NONCE_ERROR) {
+            fatal_error("License nonce verification failed.\n"
+                        "Please check your device clock is set correctly and try again.");
         } else if (result == LICENSE_UNLICENSED) {
             fatal_error("This device is not licensed to use this module.\n"
                         "If you believe this is a mistake, please contact the maintainer.\n\n"
@@ -291,13 +304,14 @@ int main(int argc, char *argv[])
             }
             break;
         }
-        if (result == LICENSE_CURL_ERROR) {
+        if (result == LICENSE_CURL_ERROR || result == LICENSE_NONCE_ERROR) {
             if (g_last_curl_error == CURLE_PEER_FAILED_VERIFY_CODE) {
                 handle_license_failure(result);  /* fatal SSL → disable + exit */
             }
-            /* Network may not be up yet; wait and retry */
+            /* Network may not be up yet or clock not synced; wait and retry */
             log_message(LOG_WARN,
-                        "License check: network error (attempt %d/%d), retrying in %ds...",
+                        "License check: %s (attempt %d/%d), retrying in %ds...",
+                        result == LICENSE_NONCE_ERROR ? "nonce error" : "network error",
                         attempt + 1, LICENSE_BOOT_MAX_RETRIES, LICENSE_BOOT_RETRY_DELAY);
             sleep(LICENSE_BOOT_RETRY_DELAY);
             continue;

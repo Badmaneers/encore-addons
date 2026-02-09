@@ -6,18 +6,26 @@
  *   FormatLicenseUrl (FUN_0060f690) → format_license_url()
  *   FUN_0060f578 → format_license_path()
  *
- * License verification flow:
- *   1. Get device serial from /proc/cmdline (androidboot.serialno=) or getprop
- *   2. Compute file hash from a device-unique file (CPU freq availability)
- *   3. Build license verification URL: https://license.rem01gaming.dev/<hash>/<serial>
- *   4. HTTP GET with libcurl, User-Agent: "EncoreLicenseVerifier/1.3"
- *   5. Compare server response with expected signature
- *   6. On first run (save_on_fail=1), save expected hash to /sdcard/
+ * License verification flow (nonce protocol):
+ *   1. Run anti-tamper integrity checks (debugger, frameworks, environment)
+ *   2. Get device serial from /proc/cmdline (androidboot.serialno=) or getprop
+ *   3. Compute file hash from a device-unique file (block partition or CPU freq)
+ *   4. Fetch a fresh nonce from the server: GET /nonce
+ *   5. Build verification URL: LICENSE_SERVER_BASE_URL/<hash>/<serial>?nonce=<nonce>
+ *   6. HTTP GET with libcurl, User-Agent: "EncoreLicenseVerifier/1.3"
+ *   7. Server returns SHA256(file_hash + serial + salt + nonce) if licensed
+ *   8. Client independently computes the same hash and does constant-time compare
+ *   9. Run scattered anti-tamper check #2 (harder to patch out)
+ *
+ * The nonce protocol prevents replay attacks: the server includes the nonce
+ * in its HMAC computation and the nonce is single-use with a 120s lifetime.
  *
  * Return values:
- *   LICENSE_OK          (0)  — licensed
- *   LICENSE_UNLICENSED  (1)  — not licensed
- *   LICENSE_CURL_ERROR  (2)  — network error
+ *   LICENSE_OK           (0)  — licensed
+ *   LICENSE_UNLICENSED   (1)  — not licensed
+ *   LICENSE_CURL_ERROR   (2)  — network error
+ *   LICENSE_TAMPER_ERROR  (3)  — anti-tamper integrity check failed
+ *   LICENSE_NONCE_ERROR   (4)  — nonce request/validation failed
  *   LICENSE_DEVICE_ERROR (-1) — can't get device info
  *
  * ⚠️ This reconstruction reproduces the license validation logic as observed
@@ -39,6 +47,9 @@
 /* Forward declaration from file_io.c */
 extern int write_file_formatted(const char *path, int append, int use_flock,
                                 const char *fmt, ...);
+
+/* Forward declarations for internal helpers */
+static void trim_response(char *s);
 
 /**
  * HMAC salt — now reconstructed at runtime via at_reconstruct_salt().
@@ -86,17 +97,30 @@ static size_t license_curl_write_cb(void *ptr, size_t size, size_t nmemb, void *
 }
 
 /**
- * format_license_url — Build the verification URL
+ * format_license_url — Build the verification URL (legacy, no nonce)
  *
  * Reconstructed from FormatLicenseUrl (FUN_0060f690):
  *   vsnprintf(buf, 0x100, "https://license.rem01gaming.dev/%s/%s", hash, serial)
  *
- * NOTE: Temporarily pointing to local test server (plain HTTP).
- *       Original: "https://license.rem01gaming.dev/%s/%s"
+ * Now uses LICENSE_SERVER_BASE_URL from common.h.
  */
 void format_license_url(char *buf, size_t buflen, const char *hash, const char *serial)
 {
-    snprintf(buf, buflen, "http://192.168.14.196:8443/%s/%s", hash, serial);
+    snprintf(buf, buflen, LICENSE_SERVER_BASE_URL "/%s/%s", hash, serial);
+}
+
+/**
+ * format_nonce_url — Build the nonce-enabled verification URL
+ *
+ * Appends ?nonce=<nonce> to the standard license URL.
+ * This is the preferred protocol — the server uses the nonce in its
+ * HMAC computation to prevent replay attacks.
+ */
+void format_nonce_url(char *buf, size_t buflen, const char *hash,
+                     const char *serial, const char *nonce)
+{
+    snprintf(buf, buflen, LICENSE_SERVER_BASE_URL "/%s/%s?nonce=%s",
+             hash, serial, nonce);
 }
 
 /**
@@ -291,6 +315,117 @@ char *compute_request_hmac(const char *str1, const char *str2)
 }
 
 /**
+ * compute_nonce_hmac — Compute the nonce-enhanced license response
+ *
+ * Matches the server's computeNonceResponse():
+ *   SHA256(file_hash + serial + salt + nonce)
+ *
+ * This is the expected response when using the nonce protocol.
+ * The server computes the same hash and returns it if the device is licensed.
+ * The client computes it independently and does a constant-time compare.
+ *
+ * @param file_hash  The device file hash (from compute_file_hmac)
+ * @param serial     The device serial number
+ * @param nonce      The server-issued nonce (format: "<ts_hex>:<random_hex>")
+ * @return malloc'd 64-char hex string, or NULL on error
+ */
+char *compute_nonce_hmac(const char *file_hash, const char *serial, const char *nonce)
+{
+    const char *salt = get_hmac_salt();
+    size_t fh_len = strlen(file_hash);
+    size_t sr_len = strlen(serial);
+    size_t nc_len = strlen(nonce);
+    size_t total_len = fh_len + sr_len + HMAC_SALT_LEN + nc_len;
+
+    char *combined = malloc(total_len + 1);
+    if (!combined) return NULL;
+
+    /* Build: file_hash + serial + salt + nonce */
+    char *p = combined;
+    memcpy(p, file_hash, fh_len); p += fh_len;
+    memcpy(p, serial, sr_len);    p += sr_len;
+    memcpy(p, salt, HMAC_SALT_LEN); p += HMAC_SALT_LEN;
+    memcpy(p, nonce, nc_len);     p += nc_len;
+    *p = '\0';
+
+    /* SHA-256 hash */
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) { free(combined); return NULL; }
+
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    int ok = 0;
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1 &&
+        EVP_DigestUpdate(ctx, combined, total_len) == 1 &&
+        EVP_DigestFinal_ex(ctx, digest, &digest_len) == 1) {
+        ok = 1;
+    }
+    EVP_MD_CTX_free(ctx);
+    free(combined);
+
+    if (!ok) return NULL;
+
+    /* Convert to hex */
+    char *hex = malloc(digest_len * 2 + 1);
+    if (!hex) return NULL;
+    for (unsigned int i = 0; i < digest_len; i++) {
+        sprintf(hex + i * 2, "%02x", digest[i]);
+    }
+    hex[digest_len * 2] = '\0';
+    return hex;
+}
+
+/**
+ * fetch_server_nonce — Request a fresh nonce from the license server
+ *
+ * Sends GET LICENSE_SERVER_BASE_URL/nonce and returns the nonce string.
+ * The nonce format is: "<timestamp_hex>:<random_hex>"
+ *
+ * @return malloc'd nonce string if successful, NULL on failure
+ */
+static char *fetch_server_nonce(void)
+{
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    curl_response_t resp = { .data = NULL, .size = 0 };
+
+    curl_easy_setopt(curl, CURLOPT_URL, LICENSE_SERVER_BASE_URL "/nonce");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, license_curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, ENCORE_USER_AGENT);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 2L);
+
+    /* TLS hardening (when using HTTPS) */
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+
+    CURLcode err = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (err != CURLE_OK || !resp.data) {
+        g_last_curl_error = err;
+        free(resp.data);
+        return NULL;
+    }
+
+    trim_response(resp.data);
+
+    /* Verify the nonce is fresh (timestamp within ±120s) */
+    if (!at_verify_nonce(resp.data)) {
+        free(resp.data);
+        return NULL;
+    }
+
+    return resp.data;
+}
+
+/**
  * Strip leading/trailing whitespace and control characters from a string in-place.
  *
  * Reconstructed from the response trimming logic in CheckLicense:
@@ -324,23 +459,26 @@ static void trim_response(char *s)
 }
 
 /**
- * check_license — Main license verification (hardened protocol)
+ * check_license — Main license verification (nonce protocol)
  *
- * Hardened flow (challenge-response with nonce):
+ * Nonce-based challenge-response flow:
  *   1. Run anti-tamper integrity check (debugger, frameworks, environment)
  *   2. Get device serial
  *   3. Find a readable device-unique file and compute its hash
- *   4. Request a nonce from the server: GET /nonce
+ *   4. Fetch a fresh nonce from the server: GET /nonce
  *   5. Build verification URL: /<hash>/<serial>?nonce=<nonce>
- *   6. HTTP GET with curl, verify response includes nonce signature
- *   7. Constant-time compare response with expected HMAC
- *   8. Run another integrity check (scattered — harder to patch out)
+ *   6. HTTP GET with curl, server returns SHA256(hash + serial + salt + nonce)
+ *   7. Client computes same hash and does constant-time compare
+ *   8. Run scattered anti-tamper check #2 (harder to patch out)
  *
- * The nonce prevents replay attacks: the server includes the nonce in its
- * HMAC computation, and the client verifies the nonce timestamp is fresh.
+ * The nonce prevents replay attacks: each nonce is single-use on the server
+ * and expires after NONCE_LIFETIME_SEC (120s). If the nonce fetch fails,
+ * we return LICENSE_NONCE_ERROR instead of silently falling back to the
+ * insecure legacy protocol.
  *
  * @param save_on_fail  If 1, save expected license data on failure
- * @return LICENSE_OK, LICENSE_UNLICENSED, LICENSE_CURL_ERROR, or LICENSE_DEVICE_ERROR
+ * @return LICENSE_OK, LICENSE_UNLICENSED, LICENSE_CURL_ERROR,
+ *         LICENSE_NONCE_ERROR, LICENSE_TAMPER_ERROR, or LICENSE_DEVICE_ERROR
  */
 int check_license(int save_on_fail)
 {
@@ -349,8 +487,6 @@ int check_license(int save_on_fail)
 
     /* ── Anti-tamper check #1 (pre-license) ──────────────────────── */
     if (at_full_integrity_check() != 0) {
-        /* Trap already armed by at_full_integrity_check().
-         * Return tamper error so the caller knows the real reason. */
         return LICENSE_TAMPER_ERROR;
     }
 
@@ -386,7 +522,7 @@ int check_license(int save_on_fail)
         return LICENSE_DEVICE_ERROR;
     }
 
-    /* Step 3: Compute request signature. */
+    /* Step 3: Compute legacy request signature (used for save_on_fail). */
     char *request_hmac = compute_request_hmac(file_hash, serial);
     if (!request_hmac) {
         free(file_hash);
@@ -394,56 +530,25 @@ int check_license(int save_on_fail)
         return LICENSE_DEVICE_ERROR;
     }
 
-    /* Step 4: Request a nonce from the server */
-    char nonce_url[256];
-    char base_url[128];
-    /* Use same base as format_license_url (extract from format_license_url pattern) */
-    snprintf(base_url, sizeof(base_url), "http://192.168.14.196:8443");
-
-    snprintf(nonce_url, sizeof(nonce_url), "%s/nonce", base_url);
-
-    CURL *curl_nonce = curl_easy_init();
-    char *server_nonce = NULL;
-
-    if (curl_nonce) {
-        curl_response_t nonce_resp = { .data = NULL, .size = 0 };
-        curl_easy_setopt(curl_nonce, CURLOPT_URL, nonce_url);
-        curl_easy_setopt(curl_nonce, CURLOPT_WRITEFUNCTION, license_curl_write_cb);
-        curl_easy_setopt(curl_nonce, CURLOPT_WRITEDATA, &nonce_resp);
-        curl_easy_setopt(curl_nonce, CURLOPT_USERAGENT, ENCORE_USER_AGENT);
-        curl_easy_setopt(curl_nonce, CURLOPT_TIMEOUT, 5L);
-        curl_easy_setopt(curl_nonce, CURLOPT_CONNECTTIMEOUT, 2L);
-        curl_easy_setopt(curl_nonce, CURLOPT_FOLLOWLOCATION, 1L);
-
-        CURLcode nonce_err = curl_easy_perform(curl_nonce);
-        curl_easy_cleanup(curl_nonce);
-
-        if (nonce_err == CURLE_OK && nonce_resp.data) {
-            trim_response(nonce_resp.data);
-            /* Verify nonce freshness (timestamp check) */
-            if (at_verify_nonce(nonce_resp.data)) {
-                server_nonce = nonce_resp.data;
-            } else {
-                free(nonce_resp.data);
-            }
-        } else {
-            free(nonce_resp.data);
-        }
+    /* Step 4: Fetch a fresh nonce from the server.
+     * The nonce protocol is mandatory — if the server doesn't respond
+     * with a valid nonce, we fail with LICENSE_NONCE_ERROR. */
+    char *server_nonce = fetch_server_nonce();
+    if (!server_nonce) {
+        /* Could be a network error or nonce validation failure.
+         * g_last_curl_error is set by fetch_server_nonce if it was curl. */
+        result = (g_last_curl_error != CURLE_OK) ? LICENSE_CURL_ERROR
+                                                 : LICENSE_NONCE_ERROR;
+        goto save_and_cleanup;
     }
 
     /* Step 5: Build verification URL with nonce */
-    if (server_nonce) {
-        snprintf(url_buf, sizeof(url_buf), "%s/%s/%s?nonce=%s",
-                 base_url, file_hash, serial, server_nonce);
-    } else {
-        /* Fallback: no nonce (backward compatibility with older servers) */
-        format_license_url(url_buf, sizeof(url_buf), file_hash, serial);
-    }
+    format_nonce_url(url_buf, sizeof(url_buf), file_hash, serial, server_nonce);
 
     /* Step 6: HTTP GET with hardened curl options */
     CURL *curl = curl_easy_init();
     if (!curl) {
-        result = (g_last_curl_error != 0x16) ? LICENSE_CURL_ERROR : LICENSE_UNLICENSED;
+        result = LICENSE_CURL_ERROR;
         goto cleanup;
     }
 
@@ -460,7 +565,6 @@ int check_license(int save_on_fail)
     /* TLS hardening */
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    /* Disable insecure protocols */
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
     /* Prevent redirects to different hosts (MITM protection) */
@@ -483,80 +587,28 @@ int check_license(int save_on_fail)
 
     trim_response(response.data);
 
-    /* Step 8: Compare server response with the request HMAC.
-     *
-     * If the server sent a nonce-enhanced response, it will be:
-     *   SHA256(file_hash + serial + "Watashi...me" + nonce)
-     * The nonce is appended to the HMAC computation.
-     *
-     * For backward compat, if no nonce: SHA256(file_hash + serial + "Watashi...me")
-     */
-    if (server_nonce) {
-        /* Compute nonce-enhanced expected response:
-         * SHA256(file_hash + serial + salt + nonce) */
-        const char *salt = get_hmac_salt();
-        size_t total_len = strlen(file_hash) + strlen(serial) + HMAC_SALT_LEN + strlen(server_nonce);
-        char *combined = malloc(total_len + 1);
-        if (!combined) {
-            free(response.data);
-            result = LICENSE_DEVICE_ERROR;
-            goto save_and_cleanup;
-        }
-        char *p = combined;
-        memcpy(p, file_hash, strlen(file_hash)); p += strlen(file_hash);
-        memcpy(p, serial, strlen(serial)); p += strlen(serial);
-        memcpy(p, salt, HMAC_SALT_LEN); p += HMAC_SALT_LEN;
-        memcpy(p, server_nonce, strlen(server_nonce)); p += strlen(server_nonce);
-        *p = '\0';
-
-        /* SHA-256 hash it */
-        EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-        unsigned char digest[EVP_MAX_MD_SIZE];
-        unsigned int digest_len = 0;
-        int hash_ok = 0;
-        if (ctx) {
-            if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) == 1 &&
-                EVP_DigestUpdate(ctx, combined, total_len) == 1 &&
-                EVP_DigestFinal_ex(ctx, digest, &digest_len) == 1) {
-                hash_ok = 1;
-            }
-            EVP_MD_CTX_free(ctx);
-        }
-        free(combined);
-
-        if (!hash_ok) {
-            free(response.data);
-            result = LICENSE_DEVICE_ERROR;
-            goto save_and_cleanup;
-        }
-
-        /* Convert digest to hex for comparison */
-        char expected_hex[65];
-        for (unsigned int i = 0; i < digest_len && i < 32; i++) {
-            sprintf(expected_hex + i * 2, "%02x", digest[i]);
-        }
-        expected_hex[64] = '\0';
-
-        /* Constant-time comparison (prevents timing attacks) */
-        size_t resp_len = strlen(response.data);
-        if (resp_len == 64 &&
-            at_secure_compare(response.data, expected_hex, 64) == 0) {
-            result = LICENSE_OK;
-        } else {
-            result = LICENSE_UNLICENSED;
-        }
-    } else {
-        /* Legacy comparison (no nonce, still use constant-time) */
-        size_t expected_len = strlen(request_hmac);
-        size_t resp_len = strlen(response.data);
-        if (resp_len >= expected_len &&
-            at_secure_compare(response.data, request_hmac, expected_len) == 0) {
-            result = LICENSE_OK;
-        } else {
-            result = LICENSE_UNLICENSED;
-        }
+    /* Step 8: Compute nonce-enhanced expected response and compare.
+     * Expected: SHA256(file_hash + serial + salt + nonce)
+     * This must match exactly what the server's computeNonceResponse() produces. */
+    char *expected = compute_nonce_hmac(file_hash, serial, server_nonce);
+    if (!expected) {
+        free(response.data);
+        result = LICENSE_DEVICE_ERROR;
+        goto save_and_cleanup;
     }
 
+    /* Constant-time comparison (prevents timing attacks).
+     * Both expected and response should be exactly 64 hex chars. */
+    size_t resp_len = strlen(response.data);
+    size_t exp_len = strlen(expected);
+    if (resp_len == 64 && exp_len == 64 &&
+        at_secure_compare(response.data, expected, 64) == 0) {
+        result = LICENSE_OK;
+    } else {
+        result = LICENSE_UNLICENSED;
+    }
+
+    free(expected);
     free(response.data);
 
     /* ── Anti-tamper check #2 (post-license, scattered) ──────────── */
